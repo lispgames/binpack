@@ -1,3 +1,6 @@
 (defpackage binpack
   (:use :cl)
-  (:export #:pack))
+  (:export #:pack
+           #:packing-failed
+           #:expand
+           #:auto-pack))
