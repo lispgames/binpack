@@ -3,4 +3,12 @@
   (:export #:pack
            #:packing-failed
            #:expand
-           #:auto-pack))
+           #:auto-pack
+           #:rect
+           #:id
+           #:x
+           #:y
+           #:w
+           #:h
+           #:with-rect
+           #:rect-initargs))
