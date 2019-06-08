@@ -5,22 +5,22 @@
 ;;;  See also: https://github.com/juj/RectangleBinPack
 ;;;
 (defclass rect ()
-  ((id :reader id :initarg :id)
-   (x :reader x :initarg :x)
-   (y :reader y :initarg :y)
-   (w :reader w :initarg :w)
-   (h :reader h :initarg :h)))
+  ((%id :reader id :initarg :id)
+   (%x :accessor x :initarg :x)
+   (%y :accessor y :initarg :y)
+   (%w :accessor w :initarg :w)
+   (%h :accessor h :initarg :h)))
 
 (defun rect (id x y w h)
   (make-instance 'rect :id id :x x :y y :w w :h h))
 
 (defmacro with-rect ((id x y w h) rect &body body)
   (alexandria:once-only (rect)
-    `(let (,@(when id `((,id (id ,rect))))
-           ,@(when x `((,x (x ,rect))))
-           ,@(when y `((,y (y ,rect))))
-           ,@(when w `((,w (w ,rect))))
-           ,@(when h `((,h (h ,rect)))))
+    `(symbol-macrolet (,@(when id `((,id (id ,rect))))
+                       ,@(when x `((,x (x ,rect))))
+                       ,@(when y `((,y (y ,rect))))
+                       ,@(when w `((,w (w ,rect))))
+                       ,@(when h `((,h (h ,rect)))))
        ,@body)))
 
 (defgeneric rect-initargs (rect)
@@ -35,11 +35,42 @@
   (:report (lambda (c s)
              (format s "Cannot pack any more rectangles (trying to pack ~sx~s)"
                      (w c) (h c)))))
+;; for debugging, needs opticl
+#++
+(defun draw-rects (file rects)
+  (destructuring-bind (x1 y1)
+      (loop for r in rects
+            maximize (+ (x r) (w r)) into mx
+            maximize (+ (y r) (h r)) into my
+            finally (return (list mx my)))
+    (let ((img (opticl:make-8-bit-rgb-image (max 1 y1) (max 1 x1))))
+      (loop for x in rects
+            for r = (+ 64 (random (- 255 64)))
+            for g = (+ 64 (random (- 255 64)))
+            for b = (+ 64 (random (- 255 64)))
+            do (opticl:fill-rectangle img (y x) (x x)
+                                      (+ (y x) (h x))
+                                      (+ (x x) (w x))
+                                      r g b))
+      (loop for x in rects
+            for r = (+ 64 (random (- 255 64)))
+            for g = (+ 64 (random (- 255 64)))
+            for b = (+ 64 (random (- 255 64)))
+            do (opticl:draw-rectangle img
+                                      (y x) (x x)
+                                      (+ (y x) (h x))
+                                      (+ (x x) (w x))
+                                      r g b))
+      (opticl:write-image-file file img))))
+
 
 (defun delta-weight (width height rect)
-  (with-slots (x y w h) rect
+  (with-rect (nil nil nil w h) rect
     (min (- w width) (- h height))))
 
+(defun rl (rect)
+  (with-rect (nil x y w h) rect
+    (list x y w h)))
 (defun grow-rects (rects dx dy)
   (destructuring-bind (x1 y1)
       (loop for r in rects
@@ -47,14 +78,15 @@
             maximize (+ (y r) (h r)) into my
             finally (return (list mx my)))
     (let ((x-edges ())
-          (y-edges ()))
+          (y-edges ())
+          (new nil))
       (loop
         for r in rects
-        do (with-slots (x y w h) r
+        do (with-rect (nil x y w h) r
              (when (= x1 (+ x w))
                (push r y-edges)
                (incf w dx))
-             (when (= y1 (+ y h))
+             (when (<= y1 (+ y h))
                (push r x-edges)
                (incf h dy))))
       (setf x-edges (sort x-edges '< :key 'x)
@@ -80,11 +112,13 @@
                    ;; this...
                    (setf last (rect nil start y1 (- x start) dy))
                    (push last (cdr rects))
+                   (push last new)
                    (setf start nil))
               finally (when (and last (< (+ (x last) (w last))
                                          (+ x1 dx)))
-                        (setf (slot-value last 'x)
-                              (+ x1 dx (- (x last)))))))
+                        (setf (x last)
+                              (+ x1 dx (- (x last))))))
+        (push (rect nil 0 y1 (+ x1 dx) dy) (cdr rects)))
       (when (and y-edges (plusp dx))
         ;; start outside edge to simplify handling of edge
         (loop with live = (list (rect nil 0 -1 0 1))
@@ -104,13 +138,15 @@
                    ;; fixme: put rects in an object or something
                    ;; instead of expanding it from the middle like
                    ;; this...
-                   (setf last (rect nil x1 start (- y dx) start))
+                   (setf last (rect nil x1 start dx (- y start)))
                    (push last (cdr rects))
+                   (push last new)
                    (setf start nil))
               finally (when (and last (< (+ (y last) (h last))
                                          (+ y1 dy)))
-                        (setf (slot-value last 'y)
-                              (+ y1 dy (- (y last))))))))))
+                        (setf (y last)
+                              (+ y1 dy (- (y last))))))
+        (push (rect nil x1 0 dx (+ y1 dy)) (cdr rects))))))
 
 (defun find-free-rect (width height rects)
   (unless rects (error 'packing-failed :w width :h height))
@@ -119,8 +155,9 @@
     (tagbody
      :retry
        (when (>= retries max-retries)
+         (draw-rects "/tmp/rects1.png" rects)
          (error "something wrong with resizing code? resized ~s~
-           times without packing anything" retries))
+           times without packing anything ~sx~s" retries width height))
        (loop
          :with min-rect = (first rects)
          :with min-delta = (delta-weight width height min-rect)
@@ -145,16 +182,15 @@
                                       (and (zerop dx) (zerop dy)))
                               (error "can't expand packing by ~sx~s"
                                      dx dy))
-                            (progn
-                              (grow-rects rects dx dy)
-                              (setf rects (normalize-free-space rects)))
+                            (grow-rects rects dx dy)
+                            (setf rects (normalize-free-space rects))
                             (incf retries)
                             (go :retry)))
                         min-rect))))))
 
 (defun intersectsp (rect1 rect2)
-  (with-slots ((x1 x) (y1 y) (w1 w) (h1 h)) rect1
-    (with-slots ((x2 x) (y2 y) (w2 w) (h2 h)) rect2
+  (with-rect (nil x1 y1 w1 h1) rect1
+    (with-rect (nil x2 y2 w2 h2) rect2
       (and (< x1 (+ x2 w2))
            (> (+ x1 w1) x2)
            (< y1 (+ y2 h2))
@@ -164,23 +200,23 @@
   (flet ((splitsp (coord from to)
            (> to coord from)))
     (if (intersectsp placed rect)
-        (with-slots (file id x y w h) rect
-          (with-slots ((px x) (py y) (pw w) (ph h)) placed
+        (with-rect (nil x y w h) rect
+          (with-rect (nil px py pw ph) placed
             (let ((result))
               (when (splitsp px x (+ x w))
-                (push (rect id x y (- px x) h) result))
+                (push (rect nil x y (- px x) h) result))
               (when (splitsp (+ px pw) x (+ x w))
-                (push (rect id (+ px pw) y (- (+ x w) (+ px pw)) h) result))
+                (push (rect nil (+ px pw) y (- (+ x w) (+ px pw)) h) result))
               (when (splitsp py y (+ y h))
-                (push (rect id x y w (- py y)) result))
+                (push (rect nil x y w (- py y)) result))
               (when (splitsp (+ py ph) y (+ y h))
-                (push (rect id x (+ py ph) w (- (+ y h) (+ py ph))) result))
+                (push (rect nil x (+ py ph) w (- (+ y h) (+ py ph))) result))
               result)))
         (list rect))))
 
 (defun containsp (outer inner)
-  (with-slots ((ox x) (oy y) (ow w) (oh h)) outer
-    (with-slots ((ix x) (iy y) (iw w) (ih h)) inner
+  (with-rect (nil ox oy ow oh) outer
+    (with-rect (nil ix iy iw ih) inner
       (and (>= (+ ox ow) (+ ix iw) ix ox)
            (>= (+ oy oh) (+ iy ih) iy oy)))))
 
@@ -206,8 +242,8 @@
          :append (subdivide-rect free-rect rect))))
 
 (defun place-rect (rect free-rects)
-  (with-slots (w h) rect
-    (with-slots ((fx x) (fy y)) (find-free-rect w h free-rects)
+  (with-rect (nil nil nil w h) rect
+    (with-rect (nil fx fy nil nil) (find-free-rect w h free-rects)
       (let ((placed (apply #'make-instance (class-of rect)
                            :x fx :y fy
                            (rect-initargs rect))))
@@ -215,7 +251,7 @@
 
 (defun sort-rects (rects)
   (labels ((apply-fn (fn rect)
-             (with-slots (w h) rect
+             (with-rect (nil nil nil w h) rect
                (funcall fn w h)))
            (sort-by (rects fn)
              (stable-sort rects #'> :key (lambda (x) (apply-fn fn x)))))
