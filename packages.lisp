@@ -2,7 +2,6 @@
   (:use :cl)
   (:export #:pack
            #:packing-failed
-           #:expand
            #:auto-pack
            #:rect
            #:id
@@ -11,4 +10,6 @@
            #:w
            #:h
            #:with-rect
-           #:rect-initargs))
+           #:rect-initargs
+           #:expand-and-retry
+           #:expand-and-continue))

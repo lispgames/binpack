@@ -116,8 +116,10 @@
                    (setf start nil))
               finally (when (and last (< (+ (x last) (w last))
                                          (+ x1 dx)))
-                        (setf (x last)
-                              (+ x1 dx (- (x last))))))
+                        (let ((x2 (+ (x last) (w last)))
+                              (nx (+ x1 dx (- (x last)))))
+                          (setf (w last) (- x2 nx))
+                          (setf (x last) nx))))
         (push (rect nil 0 y1 (+ x1 dx) dy) (cdr rects)))
       (when (and y-edges (plusp dx))
         ;; start outside edge to simplify handling of edge
@@ -144,8 +146,10 @@
                    (setf start nil))
               finally (when (and last (< (+ (y last) (h last))
                                          (+ y1 dy)))
-                        (setf (y last)
-                              (+ y1 dy (- (y last))))))
+                        (let ((y2 (+ (y last) (h last)))
+                              (ny (+ y1 dy (- (y last)))))
+                          (setf (h last) (- y2 ny))
+                          (setf (y last) ny))))
         (push (rect nil x1 0 dx (+ y1 dy)) (cdr rects))))))
 
 (defun find-free-rect (width height rects)
@@ -172,7 +176,8 @@
                     (if (minusp min-delta)
                         (restart-case
                             (error 'packing-failed :w width :h height)
-                          (expand (dx dy)
+                          (expand-and-continue (dx dy)
+                            :report "Increase available space and continue packing."
                             :interactive (lambda ()
                                            (format t "expand by (dx dy):")
                                            (read))
@@ -258,17 +263,33 @@
     (sort-by (sort-by rects #'min) #'max)))
 
 (defun pack (rects width height)
-  (let ((maxw 0)
-        (maxh 0))
-    (values
-     (loop :with free-rects = (list (rect nil 0 0 width height))
-           :for rect :in (sort-rects rects)
-           :for (placed new-free-rects) = (place-rect rect free-rects)
-           :do (setf free-rects new-free-rects)
-               (setf maxw (max maxw (+ (x placed) (w placed))))
-               (setf maxh (max maxh (+ (y placed) (h placed))))
-           :collect placed)
-     maxw maxh)))
+  (loop
+    (restart-case
+        (let ((maxw 0)
+              (maxh 0))
+          (return-from pack
+            (values
+             (loop :with free-rects = (list (rect nil 0 0 width height))
+                   :for rect :in (sort-rects (copy-seq rects))
+                   :for (placed new-free-rects) = (place-rect rect free-rects)
+                   :do (setf free-rects new-free-rects)
+                       (setf maxw (max maxw (+ (x placed) (w placed))))
+                       (setf maxh (max maxh (+ (y placed) (h placed))))
+                   :collect placed)
+             maxw maxh)))
+      (expand-and-retry (dx dy)
+        :report "Increase available space and restart packing"
+        :interactive (lambda ()
+                       (format t "expand by (dx dy):")
+                       (read))
+        (when (or (not (integerp dx))
+                  (not (integerp dy))
+                  (minusp dx) (minusp dy)
+                  (and (zerop dx) (zerop dy)))
+          (error "can't expand packing by ~sx~s"
+                 dx dy))
+        (incf width dx)
+        (incf height dy)))))
 
 (defun total-pixels (rects)
   (loop for r in rects sum (* (w r) (h r))))
@@ -276,7 +297,8 @@
 
 (defun %auto-pack (rects &key (width :auto) (height :auto)
                            (auto-size-granularity-x 4)
-                           (auto-size-granularity-y 1))
+                           (auto-size-granularity-y 1)
+                           (expand-mode :restart))
   (flet ((ceiling-asgx (x)
            (* auto-size-granularity-x (ceiling x auto-size-granularity-x)))
          (ceiling-asgy (y)
@@ -303,40 +325,59 @@
                  (incf awidth (first auto-delta))
                  (incf aheight (second auto-delta))
                  (assert (not (every 'zerop auto-delta)))
-                 (apply 'invoke-restart 'binpack:expand auto-delta)))))
+                 (apply 'invoke-restart (ecase expand-mode
+                                          (:restart 'expand-and-retry)
+                                          (:continue 'expand-and-continue))
+                        auto-delta)))))
         (pack rects awidth aheight)))))
 
 (defun auto-pack (rects &key (width :auto) (height :auto)
                           (auto-size-granularity-x 4)
                           (auto-size-granularity-y 1)
-                          optimize-pack)
+                          optimize-pack
+                          (expand-mode (if optimize-pack :continue :restart)))
   (if optimize-pack
       (loop with best = nil
             with best-total = most-positive-fixnum
             with minw = (loop for r in rects maximize (w r))
             with minh = (loop for r in rects maximize (h r))
-            ;;with total-pixels = (total-pixels dimensions)
-            for w2 from (* auto-size-granularity-x
-                           (ceiling (* 4 minw) auto-size-granularity-x))
+            with total-pixels = (total-pixels rects)
+            ;; search from larger of 2x min width or 4:1 aspect ratio
+            for w0 from (* auto-size-granularity-x
+                           (ceiling (max (/ (sqrt total-pixels) 2)
+                                         (* 2 minw))
+                                    auto-size-granularity-x))
             by auto-size-granularity-x
-            for (pack w h)
-              = (multiple-value-list
-                 (%auto-pack (copy-list rects)
-                             :width w2 :height height
-                             :auto-size-granularity-x auto-size-granularity-x
-                             :auto-size-granularity-y auto-size-granularity-y))
-            for aspect = (1+ (* 1/100 (- (/ (max w h) (min w h)) 1)))
-            for total = (* aspect (* w h))
-            do (format t "auto-sizing: ~sx~s, ~a ~s / ~s~%"
-                       w h (if (< total best-total) "++" "--")
-                       (float total) (float best-total))
-            when (< total best-total)
-              do (setf best-total total)
-                 (setf best (list pack w h))
-            while (and (> h (* 1/4 w))
-                       (> h minh))
+            for last-h = 0
+            for last-w = 0
+            do (loop for mode in (if (eql optimize-pack :both)
+                                     '(:continue :restart)
+                                     (list expand-mode))
+                     for (pack w h)
+                       = (multiple-value-list
+                          (%auto-pack
+                           rects
+                           :width w0 :height :auto
+                           :auto-size-granularity-x auto-size-granularity-x
+                           :auto-size-granularity-y auto-size-granularity-y
+                           :expand-mode mode))
+                     for aspect = (1+ (* 1/100 (- (/ (max w h) (min w h)) 1)))
+                     for total = (* aspect (* w h))
+                     #+do (format t "auto-sizing ~s: ~sx~s, ~a ~s / ~s :: ~s~%"
+                                  mode
+                                  w h (if (< total best-total) "++" "--")
+                                  (float total) (float best-total)
+                                  (float (/ (* w h) total-pixels)))
+                     do (setf last-h h last-w w)
+                     when (< total best-total)
+                       do (setf best-total total)
+                          (setf best (list pack w h)))
+               ;; stop when we hit 2x min height or 1:4 aspect ratio
+            while (and (> last-h (* 1/4 last-w))
+                       (> last-h (* 2 minh)))
             finally (return (values-list best)))
       (%auto-pack rects
                   :width width :height height
                   :auto-size-granularity-x auto-size-granularity-x
-                  :auto-size-granularity-y auto-size-granularity-y)))
+                  :auto-size-granularity-y auto-size-granularity-y
+                  :expand-mode expand-mode)))
