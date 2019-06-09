@@ -159,7 +159,6 @@
     (tagbody
      :retry
        (when (>= retries max-retries)
-         (draw-rects "/tmp/rects1.png" rects)
          (error "something wrong with resizing code? resized ~s~
            times without packing anything ~sx~s" retries width height))
        (loop
