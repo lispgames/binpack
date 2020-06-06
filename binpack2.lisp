@@ -208,7 +208,6 @@
                (,dy (if ,prev (- (hv-y ,node) (hv-y ,prev)))))
            (setf ,prev ,node)
            (flet ((jump (,n)
-                                        ;(setf ,prev nil)
                     (setf ,node (,(ecase iterator
                                     (dll-prev 'dll-next)
                                     (dll-next 'dll-prev))
@@ -263,9 +262,6 @@
 
 (setf *print-circle* t)
 (defun classify-vertical-edge (top bottom)
-  #++(format t "classify vertical edge ~s,~s -> ~s,~s~%"
-             (hv-x top) (hv-y top)
-             (hv-x bottom) (hv-y bottom))
   (let ((up (up-dir bottom))
         (down (down-dir top))
         (rising (eql (dll-prev top) bottom))
@@ -276,9 +272,6 @@
       (return-from classify-vertical-edge nil))
     (setf top (extend-edge-up top up))
     (setf bottom (extend-edge-down bottom down))
-    #++(format t " (extended ~s,~s -> ~s,~s)~%"
-               (hv-x top) (hv-y top)
-               (hv-x bottom) (hv-y bottom))
     (let ((dxt (- (hv-x (funcall up top)) (hv-x top)))
           (dxb (- (hv-x (funcall down bottom)) (hv-x bottom))))
       (cond
@@ -340,20 +333,14 @@
 
     (let ((left nil))
       (flet ((add (n)
-               #++(format t "add ~s,~s, left=~s~%"
-                          (hv-x n) (hv-y n)
-                          (if left
-                              (list (hv-x left) (hv-y left))))
                (if left
                    (when (< (hv-x n) (hv-x left))
                      (setf left n))
                    (setf left n))))
-        #++(format t "v = ~s,~s~%" (hv-x v) (hv-y v))
         (do-dll/next (v2 v2a)
           (let* ((v3 (dll-next v2))
                  (y2 (hv-y v2))
                  (y3 (hv-y v3)))
-            #++(format t " v2 = ~s,~s~%" (hv-x v2) (hv-y v2))
             (cond
               ((and (> (hv-x v2) (hv-x v))
                     (= y2 y1))
@@ -528,7 +515,6 @@
     (with-minmax (x1 x2 mmx)
       (with-minmax (y1 y2 mmy)
         (let ((hit-q nil))
-          #++(format t "start~%")
           (do-hole-vertices/next (v top dx dy endp)
             ;; to build a subhole top, we walk clockwise from start
             ;; (following hv-n) collecting vertical edges until we see
@@ -542,8 +528,6 @@
             (when (and dx (minusp dx))
               (unless end
                 (setf end (hv-x (dll-prev v))))
-                                        ;(push (hv-x (dll-prev v)) top-x)
-                                        ;(push (hv-y (dll-prev v)) top-y)
               (return nil))
             (when (and (not hit-q)
                        dy
@@ -551,14 +535,9 @@
                        (hv-q v))
               (setf end (hv-x v))
               (setf hit-q v))
-            #++(format t " d:~3d,~3d. n=~s, w=~s, q=~s, hq=~s~%"
-                       dx dy
-                       (hv-n v) (hv-w v) (hv-q v)
-                       hit-q)
             (cond
               ;; first point
               ((and (not dy) (not hit-q))
-               #++(format t "first~%")
                (push (hv-x v) top-x)
                (push (hv-y (dll-prev v)) top-y)
                (push (hv-x v) top-x)
@@ -570,7 +549,6 @@
               ((and dy
                     (plusp dy)
                     (not (hv-n v)))
-               #++(format t "up ~s, q = ~s~%" dy (hv-q v))
                (unless hit-q
                  (push (hv-x v) top-x)
                  (push (hv-y v) top-y)
@@ -588,7 +566,6 @@
                (when (or (not hit-q)
                          (<= (hv-y v)
                              (hv-y hit-q)))
-                 #++(format t "down~%")
                  (incf falling)
                  (push (hv-x v) top-x)
                  (push (hv-y v) top-y)
@@ -597,8 +574,6 @@
             ;; follow hv-n
             (when (and dx (zerop dx) (hv-n v))
               (jump (hv-n v)))))
-        #++(format t "tx=~{ ~4d~}~%ty=~{ ~4d~}~%"
-                   (reverse top-x) (reverse top-y))
 
         (let ((hit-q nil))
           (do-hole-vertices/prev (v bottom dx dy)
@@ -612,9 +587,6 @@
             ;; hv-n (can be any # >= 1)
 
             (when (and dx (minusp dx))
-              #++(when hit-q
-                   (push (hv-x (dll-next v)) bottom-x)
-                   (push (hv-y (dll-next v)) bottom-y))
               (return nil))
             (when (and (not hit-q)
                        dy
@@ -653,16 +625,11 @@
         ;; (may need to trim or extend ends depending on how previous
         ;; loops terminated, not sure yet)
         (when (or top-y bottom-y)
-          #++(format t "trim~{ ~4d~}~%ty  ~{ ~4d~}~%bx  ~{ ~4d~}~%by  ~{ ~4d~}~%"
-                     top-x top-y bottom-x bottom-y)
+
           (when (< (car top-y)
                    (car bottom-y))
             (let ((p (position (car bottom-x) top-x)))
-              #++(format t "rtrimming p=~s~%" p)
-              #++(when p (format t "trim ~s / ~s~%"
-                                 (subseq top-x 0 p)
-                                 (subseq top-y 0 p)))
-              (if p
+               (if p
                   (setf top-x (subseq top-x p)
                         top-y (subseq top-y p)
                         top-gap (subseq top-gap p)
@@ -677,10 +644,6 @@
         (setf falling
               (and (cddr top-y)
                    (< (cadr top-y) (caddr top-y))))
-        #++(format t "tx=~{ ~4d~}~%ty=~{ ~4d~}~%"
-                   (reverse top-x) (reverse top-y))
-        #++(format t "bx=~{ ~4d~}~%by=~{ ~4d~}~%"
-                   (reverse bottom-x) (reverse bottom-y))
 
         (flet ((make-dh (xx yy &optional making-c)
                  (loop for y0 = nil then y
@@ -688,16 +651,13 @@
                        for y in yy
                        for falling = (and y0 (< y y0))
                        do (mmx x) (mmy y)
-                       #++(format t "~s,~s-~s (~s ~s)~%" x y0 y y1 y2)
-                       when y0
+                        when y0
                          collect (if (and falling making-c)
                                      (make-point-bottom-left
                                       x (alexandria:clamp (min y0 y) y1 y2))
                                      (make-point
                                       x (alexandria:clamp (min y0 y) y1 y2)))
-                       #+collect (make-point
-                                  x (alexandria:clamp (min y0 y) y1 y2))
-                         into d
+                          into d
                          and collect (make-point x (alexandria:clamp
                                                     (max y0 y) y1 y2))
                                into h
@@ -727,16 +687,6 @@
                                   :width (- x2 x1)
                                   :height (- y2 y1))))
             (insert-after prev s)
-            #++
-            (format t "make subhole, ~s,~s - ~s,~s = ~sx~s~%"
-                    x1 y1 x2 y2 (- x2 x1) (- y2 y1))
-            #++
-            (format t "made subhole, ~sx~s (~sx~s)~%"
-                    (sh-max-width s)
-                    (sh-max-height s)
-                    (- x2 x1) (- y2 y1))
-            #++(format t "make subhole, ~s,~s - ~s,~s = ~sx~s~%"
-                       x1 y1 x2 y2 (- x2 x1) (- y2 y1))
             s))))))
 
 (defun make-subholes (hole)
@@ -764,6 +714,7 @@
     (insert-after prev a)
     (setf (h-subholes a) (make-subholes a))
     a))
+
 ;; for now we only directly create the first open hole, others are
 ;; clipped from that
 (defun init-hole (w h)
@@ -772,6 +723,7 @@
          (c (make-hole-vertex w h b))
          (d (make-hole-vertex w 0 c)))
     (make-hole d)))
+
 ;; mostly for debugging/testing
 (defun %make-hole-from-points (points)
   ;; points should be (x1 y1 x2 y2 ...), clockwise around hole
@@ -852,7 +804,6 @@
       (every 'null (f-gap bottom))
       (every 'null (f-gap-y bottom))
       (loop with px = most-negative-fixnum
-                                        ;with l = (length (f-d bottom))
             for d0 = nil then d
             for h0 = nil then h
             for d across (f-d bottom)
@@ -901,14 +852,11 @@
   (< (y p1) (y p2)))
 
 (defun make-c (fb l end)
-  (format t "make c @ ~s ~s~%" l end)
   ;;generate C given FB and width L of b1b2 (procedure BOTTOM etc)
   (flet ((h (x)
            (aref (f-h fb) x))
          (d (x)
-           (aref (f-d fb) x))
-         (ff (&rest r)
-           #++(apply #'format t r)))
+           (aref (f-d fb) x)))
     (let* ((q (make-deq))
            (b1 (-x (d 0) l))
            (b2 (d 0))
@@ -917,58 +865,21 @@
            (support (if (= (y b1) (y (d 1)))
                         (d 1)
                         (h 1))))
-      (loop for h across (f-h fb)
-            for d across (f-d fb)
-            do (ff " ~s - ~s~%" d h))
-
-      (ff "support1 = ~s~%" support)
       (labels ((setup (start end)
-                 (ff "setup ~s - ~s~%" start end)
                  (let ((q (make-deq)))
                    (loop
                      for i from (- end 1) downto start
-                     do (ff "setup@~s/~s ~s / ~s ? ~s - ~s~%"
-                            i m (deq-empty-p q)
-                            (top1 q)
-                            (d i)
-                            (h (1+ i)))
-                     when (or (deq-empty-p q)
+                      when (or (deq-empty-p q)
                               (<=y (first (top1 q))
                                    (d i)))
-                       do (ff "!!~s ~s~% ~s ~s~%" (d i) (h i)
-                              (d (1+ i)) (h (1+ i)))
-                          (let* ((p1 (if (and (= (1+ i) end)
+                       do (let* ((p1 (if (and (= (1+ i) end)
                                               (not (point-bottom-left-p (d end))))
                                          (d (1+ i))
                                          (h (1+ i))))
                                  (p0 (make-point (x (d i))
                                                  (y p1))))
-                            (ff " @~s/~S, ~s - ~s~%"
-                                i end (d (1+ i)) (h (1+ i)))
-                            (ff "-- add edge ~s~%"
-                                (list p0 p1))
                             (push1 (list p0 p1)
                                    q)))
-
-                   #++(when (deq-empty-p q)
-                        (break "no edges?")
-                        (format t "setup#falling add first edge: @ ~s,~s~%" start end)
-                        (assert (plusp start))
-                        (format t "  start-1= ~s ~s~%"
-                                (d (1- start)) (h (1- start)))
-                        (format t "  start  = ~s ~s~%"
-                                (d start) (h start))
-                        (when (array-in-bounds-p (f-h fb) (1+ start))
-                          (format t "  start+1= ~s ~s~%"
-                                  (d (1+ start)) (h (1+ start))))
-                    
-                        (format t "    end = ~s ~s~%"
-                                (d end) (h end))
-                        (push1 (print (list (d start)
-                                            (make-point (x (d (1+ start)))
-                                                        (y (d start)))))
-                               q)
-                        (terpri))
                    q))
                (mergeq (q1)
                  (when (not (deq-empty-p q1))
@@ -984,26 +895,13 @@
                        do (push2 x q)
                           (pop1 q1)))
                (slide (start)
-                 (ff "slide from ~s, b1 = ~s  l=~s~%" start b1 l)
-                 (loop named outer
+                  (loop named outer
                        for hit = nil
                        for i = start
                        repeat 10
                        while (< start m)
-                       do (ff " slide @ ~s~%" start)
-                          ;; slide on support
-                          (loop do (ff "  i @ ~s~%" i)
-                                   (when (< i m)
-                                     (ff "   hi = ~s, b2 = ~s~%" (h i) b2))
-                                   (ff "   support = ~s (~s)~%"
-                                       support (+x support l))
-                                   (when (< i m)
-                                     (ff "xhi = ~s, xs+l=~s. yhi=~s,yb2=~s~%"
-                                         (x (h i))
-                                         (+ (x support) l)
-                                         (y (h i))
-                                         (y b2)))
-                                   ;; ready to fall
+                       do ;; slide on support
+                          (loop ;; ready to fall
                                 when (>= (x (h i))
                                          (+ (x support) l))
                                   do (setf hit :drop)
@@ -1013,10 +911,7 @@
                                 when (and (= (y (h i)) (y support))
                                           (/= (x (h i))
                                               (x support)))
-                                  do (ff "slide sopport ~s ->~s~%"
-                                         support (h i))
-                                     (ff "b2 = ~s~%" b2)
-                                     (setf support (h i))
+                                  do (setf support (h i))
 
                                      ;; hit hidi
                                 when (> (y (h i)) (y b2))
@@ -1027,84 +922,44 @@
 
                                 when (>= i m)
                                   return nil)
-                          (ff " hit = ~s~%" hit)
                           (ecase hit
                             ((nil)
                              ;; i = m, done
-                             #++(push (make-point (- (x (h i)) l)
-                                                  (y b1))
-                                      c)
-                             (ff "hit end ~s drop - ~s~%" i (car c))
                              (assert (>= i (1- m)))
                              (pop c)
-                             #++
-                             (if (< (- (x (h (1- m))) l)
-                                    (x (car c)))
-                                 ;; was this supposed to be a WHEN?
-                                 ;; does it still happen?
-                                 (break "dropping ~s (~s @ ~s)~%"
-                                        c (h (1- m)) i)
-                                 (pop c))
                              (loop-finish))
                             (:raise
-                             (ff "raise, i = ~s,~s~% b1=~s, support=~s~%"
-                                 (d i) (h i)
-                                 b1 support)
                              (let ((u (make-point (- (x (h i)) l)
                                                   (y b1))))
-                               (ff "add pointr1 @ ~s~%" u)
                                (push u c)
-                               (ff "raise, b1 ~s -> ~s~%"
-                                   b1 (make-point-open (- (x (h i)) l)
-                                                       (y (h i))))
                                (setf b1 (make-point-open (- (x (h i)) l)
                                                          (y (h i)))
                                      b2 (h i))
 
                                (when (= i (1- m))
                                  (loop-finish))
-                               (ff "add pointr2 @ ~s~%" b1)
                                (push b1 c)
 
                                (empty-deq q)
-                               (ff "raise support ~s -> ~s~%"
-                                   support (make-point (x (d (1+ i)))
-                                                       (y b1)))
                                (setf support (make-point (x (d (1+ i)))
                                                          (y b1)))
                                (setf start (1+ i))))
                             (:drop
                              ;; ready to fall
-                             (ff "drop, b1 ~s -> ~s~%" b1 support)
                              (setf b1 support)
                              (setf b2 (+x b1 l))
-                             (ff "  add point @ ~s~%"
-                                 (make-point-open (x b1) (y b1)))
                              (push (make-point-open (x b1) (y b1)) c)
                              (let ((q1 (setup start i)))
-                               #++(ff "q = ~s~%q1 = ~s~%"
-                                      (binpack-test::dll-contents (%deq-front q))
-                                      (binpack-test::dll-contents (%deq-front q1)))
                                (mergeq q1)
-                               #++(ff "merged: q = ~s~%q1 = ~s~%"
-                                      (binpack-test::dll-contents (%deq-front q))
-                                      (binpack-test::dll-contents (%deq-front q1)))
                                ;; q is list of lists of horizontal segments
                                (destructuring-bind (lk rk) (top1 q)
-                                 (ff "lrk = ~s ~s~%" lk rk)
                                  (pop1 q)
                                  (let ((dy (- (y b1) (y lk))))
-                                   (ff "drop2, dy=~s b1 ~s -> ~s~%"
-                                       dy
-                                       b1 (-y b1 dy))
                                    (setf b1 (-y b1 dy)
                                          b2 (-y b2 dy))
-                                   (ff "  add point2 @ ~s~%" b1)
                                    (push (make-point-bottom-left (x b1) (y b1))
                                          c)
                                    (setf start i)
-                                   (ff "drop support ~s -> ~s~%"
-                                       support rk)
                                    (setf support rk))))))))
                (trim ()
                  (assert (evenp (length c)))
@@ -1123,12 +978,8 @@
                                      p1)
                          and collect p2)))
         (slide 1)
-        (ff "c = ~s~%" c)
         (setf c (nreverse c))
-        (ff "r = ~s~%" c)
-        (let ((r (coerce (trim)'vector)))
-          (ff " -> ~s~%" r)
-          r)))))
+        (coerce (trim)'vector)))))
 
 (defun make-d (ft l end falling)
   (declare (ignorable end falling))
@@ -1144,11 +995,6 @@
              (aref (f-gap-y ft) x)))
       (assert (= (length (f-d ft)) (length (f-h ft))))
       (unless falling
-        #++(format t "make d not falling~%")
-        #++(format t " ~s / ~s~%" (length (f-h ft)) (length (f-d ft)))
-        #++(loop for h across (f-h ft)
-                 for d across (f-d ft)
-                 do (format t " ~s - ~s~%" d h))
         (return-from make-d
           ;; this goes a bit past what is needed, since it doesn't check
           ;; right edge, but placement will be limited by lower edge
@@ -1159,26 +1005,14 @@
                                 collect (make-point-gap (x (h i))
                                                         (y (h i))
                                                         (g i)
-                                                        (gy i))
-                                #+when (> (x (d i))
-                                          (+ end l))
-                                #+do (loop-finish)))))
-            #++(format t " = ~s~%" a)
+                                                        (gy i))))))
             (coerce a 'vector))))
       (let ((d (list (h 0)))
             (p (1- (length (f-h ft)))))
-        #++(format t "make d, end=~s~% d=~s~% dp-1=~s~%" end d (d (1- p)))
-        #++(format t " ft = (~s/~s)~%~{d,h: ~s~%~}"
-                   (length (f-d ft)) (length (f-h ft))
-                   (loop for d across (f-d ft)
-                         for h across (f-h ft)
-                         collect (list d h)))
         (when (> (+ (x (d 0)) l)
                  (x (d p)))
-          #++(format t "  falling, doesn't fit at all~%")
           (return-from make-d #()))
-       
-        #++(format t "start span0 @ ~s~%" (h 0))
+
         (loop with p-1 = (1- p)
               with dp-1 = (d p-1)
               with dp = (d p)
@@ -1187,49 +1021,34 @@
               for dn = (d n)
               for hn = (h n)
               for gap = (g n)
-              #+do (format t "  ~s: hi=~s, di=~s~%" n hn dn)
               if (= n p-1)
                 ;; if we reached p-1, previous span exactly fits in
                 ;; gap, so need to make it shorter, and add span under
                 ;; falling edge
-                do #++(format t "  end ~s~%" hn)
-                   (let* ((u (make-point (- (x dp-1) l) (y dn)))
+                do (let* ((u (make-point (- (x dp-1) l) (y dn)))
                           (v (make-point-open (x u) (y dp-1)))
                           (prev (car d)))
                      (assert (= (x u) (x (-x hn l))))
-                    
+
                      (cond
                        ;; possibly give up on current span
                        ((> (+ (x prev) l) (x dn))
-                        #++(format t " give up on - ~s~%" (car d))
                         (pop d))
                        ;; or complete it
                        (t
                         (let ((p (make-point (- (x dn) l)
                                              (y prev))))
-                          #++(format t " finish span @ ~s~%" p)
                           (push p d))))
-                     (progn             ;when (< (x v) end)
-                       #++(format t "final span0 @ ~s -> ~s~%"
-                                  v (h p))
-                       (push v d)
-                       (push (h p) d))
+
+                     (push v d)
+                     (push (h p) d)
                      (loop-finish))
-              #+do (format t "  ~s < ~s? ~s~%"
-                           (+ (x dn) l) (x dp-1)
-                           (<= (+ (x dn) l) (x dp-1)))
               if (<= (+ (x dn) l)
                      (if (>= (y dp-1) (y dn))
                          (x dp)
                          (x dp-1)))
                 ;; next span fits, finish previous span and start next
-                do #++(format t "  span fits @-> ~s~%" dn)
-                   (push dn d)
-              #++(format t "   span ~s ~s~% @ ~s~%"
-                         n hn
-                         (if gap
-                             (make-point-gap (x hn) (y hn) gap (gy n))
-                             hn))
+                do (push dn d)
                  (if gap
                      (push (make-point-gap (x hn) (y hn) gap (gy n)) d)
                      (push hn d))
@@ -1238,17 +1057,14 @@
                 if (> (+ (x dn) l)
                       (x dp))
                   ;; hit end, no more spans fit
-                  do #++(format t "hit end, no more spans~%")
-                     (cond
+                  do (cond
                        ;; possibly give up on current span
                        ((> (+ (x (car d)) l) (x dp))
-                        #++(format t " give up on - ~s~%" (car d))
                         (pop d))
                        ;; or complete it
                        (t
                         (let ((p (make-point (- (x dp) l)
                                              (y (car d)))))
-                          #++(format t " finish last span @ ~s~%" p)
                           (push p d))))
                   and return nil
               else
@@ -1260,12 +1076,7 @@
                                            (y dn)))
                             (v (make-point-open (x u) (y dp-1))))
                        (assert (>= (x u) (x dn)))
-                       #++(format t "  hit falling edge -> ~s(~s)~%"
-                                  dn u)
-                       #++(format t " @ ~S~%" U)
                        (push u d)
-                       #++(format t "final span ~s -> ~s~%"
-                                  v (h p))
                        (push v d)
                        (push (h p) d)
                        (loop-finish))
@@ -1273,24 +1084,19 @@
                 if (= (y dp-1) (y dn))
                   ;; we span the gap between this span and falling edge
                   do (let ((u (make-point (x dp) (y dn))))
-                       #++(format t "  spans gap -> ~s @(~s)~%" dn u)
                        (push u d)
                        (loop-finish))
               if (> (+ (x dn) l) (x dp-1))
                 ;; fig 12b: falling edge is above this span, but blocks
                 ;; any intervening spans. find vertical edge left of
                 ;; falling edge and add last span, if it fits
-                do #++(format t "  raising to fe -> ~s~%" (car d))
-                   (cond
+                do (cond
                      ((> (+ (x (car d)) l)
                          (if (>= (y dp-1) (y (car d)))
                              (x dp)
                              (x dp-1)))
-                      #++(format t "first span doesn't fit, removing - ~s~%"
-                                 (car d))
                       (pop d))
                      (t
-                      #++(format t "   @ ~s~%" (d (1+ n)))
                       (push (d (1+ n)) d)))
                    ;; find vertical edge left of falling edge
                    (loop while (and (< n p-1)
@@ -1299,7 +1105,6 @@
                          do (incf n))
                    (setf dn (d n))
                    (setf hn (h n))
-              #++(format t "n -> ~s = ~s, ~s~%" n dn hn)
                  (when (<= (+ (x dn) l)
                            (x dp))
                    (let ((u (if (>= (x dn) (- (x dp-1) l))
@@ -1313,12 +1118,9 @@
                                                           (- (min g2 fy)
                                                              g1))
                                                       (gy n)))
-                                    #++                                     (break "~s" hn)
                                     (make-point (x dn) (y dp-1)))
                                 (make-point-open (- (x dp-1) l)
                                                  (y dp-1)))))
-                     #++(format t "final span2 @ ~s -> ~s~%"
-                                u hp)
                      (push u d)
                      (push hp d)))
                  (loop-finish))
@@ -1330,186 +1132,133 @@
 
 (defun placing (h c d)
   (declare (type vector c d))
-  (flet ((ff (&rest r)
-           (declare (ignorable r))
-           #++(apply #'format t r)))
-    (let ((e)
-          (m (1- (floor (length c) 2)))
-          (p (1- (floor (length d) 2))))
-      (ff "placing h=~s in~% c:(~s) ~s~% d:(~s)~s~%"
-          h m c
-          p d)
-      (when (or (< m 0) (< p 0))
-        ;; C or D is empty, nothing fits
-        (return-from placing nil))
-      (labels ((l (x) (aref c (* x 2)))
-               (r (x) (aref c (1+ (* x 2))))
-               ;; ll=l', rr=r'
-               (ll (x) (aref d  (* x 2)))
-               (rr (x) (aref d (1+ (* x 2))))
-               ;; return true if H fits between l' and l at specified indices
-               (ok (j i)
-                 #++(ff "ok @ ~s,~s = (>= (- ~s ~s) ~s) = ~s~%"
-                        j i
-                        (y (ll j)) (y (l i)) h
-                        (>= (- (y (ll j)) (y (l i)))
-                            h))
-                 (>= (- (y (ll j)) (y (l i)))
-                     h))
-               (falling (j i x)
-                 (declare (ignore j))
-                 ;; true if we are exactly at a point-open point on C
-                 (or (and (point-open-p (l i))
-                          (= x (x (l i))))
-                     (and (point-open-p (r i))
-                          (= x (x (r i))))))
-               (sliding (j i x)
-                 ;; true if placement doesn't have any support to left
-                 (cond
-                   ;; placed at bottom-left point on C, has support
-                   ((and (= x (x (l i)))
-                         (point-bottom-left-p (l i)))
-                    nil)
-                   ;; at left edge of span at top, no gap. Need to
-                   ;; make sure placement extends past bottom of top
-                   ;; edge
-                   ((and (= x (x (ll j)))
-                         (or (not (point-gap-p (ll j)))
-                             (not (gap (ll j))))
-                         ;; fixme: set falling edge as 'open' or store
-                         ;; Y value for all edges in D?
-                         (not (point-open-p (ll j)))
-                         (> (+ (y (l i)) h)
-                            ;; use height of previous edge, should be
-                            ;; right with way D is generated? maybe
-                            ;; store in gap-y instead?
-                            (y (rr (max 0 (1- j))))))
-                    #++(when (= j p)
-                         (break "probably wrong if it gets here"))
-                    nil)
-                   ;; at left edge of span at top, and there is a gap,
-                   ;; check gap for support
-                   ((and (= x (x (ll j)))
-                         (typep (ll j) 'point-gap)
-                         (gap (ll j)))
-                    (ff "check gap @ ~s,~s: ~s, ~s, ~s-~s~%"
-                        i j x (ll j)
-                        (gap-y (ll j))
-                        (when (gap (ll j))
-                          (+ (gap-y (ll j))
-                             (gap (ll j)))))
-                    (let* ((p (ll j))
-                           (gy1 (gap-y p))
-                           (gy2 (+ gy1 (gap p)))
-                           (y1 (y (l i)))
-                           (y2 (+ y1 h)))
-                      (or (and (< gy1 y1)
-                               (<=  y2 gy2))
-                          (< y2 gy1))))
-                   (t
-                    ;; otherwise, assume no support? (shouldn't happen?)
-                    #++(break "does this happen?~%~s ~s~%~s ~s~%"
-                              (l i) (r i)
-                              (ll j) (rr j))
-                    t))))
-        (declare (ignorable #'r #'rr))
-        (loop
-          with min-x = (x (l 0))
-          with placed = nil
-          with i = 0 ;; index into C (bottom)
-          with j = 0 ;; index into D (top)
-          repeat 100
-          do (ff "i = ~s/~s, j = ~s/~s~%" i m j p)
-             (setf min-x (max min-x
-                              (x (l i))
-                              (x (ll j))))
-             (ff "  = ~s, ~s ~s~%" (ok j i) (falling j i (max min-x
-                                                              (x (l i))
-                                                              (x (ll j))))
-                 (sliding j i min-x))
-
-             ;; if we have a valid placement, add it
-          do (let* ((x (max min-x
+  
+  (let ((e)
+        (m (1- (floor (length c) 2)))
+        (p (1- (floor (length d) 2))))
+    (when (or (< m 0) (< p 0))
+      ;; C or D is empty, nothing fits
+      (return-from placing nil))
+    (labels ((l (x) (aref c (* x 2)))
+             (r (x) (aref c (1+ (* x 2))))
+             ;; ll=l', rr=r'
+             (ll (x) (aref d  (* x 2)))
+             (rr (x) (aref d (1+ (* x 2))))
+             ;; return true if H fits between l' and l at specified indices
+             (ok (j i)
+               (>= (- (y (ll j)) (y (l i)))
+                   h))
+             (falling (j i x)
+               (declare (ignore j))
+               ;; true if we are exactly at a point-open point on C
+               (or (and (point-open-p (l i))
+                        (= x (x (l i))))
+                   (and (point-open-p (r i))
+                        (= x (x (r i))))))
+             (sliding (j i x)
+               ;; true if placement doesn't have any support to left
+               (cond
+                 ;; placed at bottom-left point on C, has support
+                 ((and (= x (x (l i)))
+                       (point-bottom-left-p (l i)))
+                  nil)
+                 ;; at left edge of span at top, no gap. Need to
+                 ;; make sure placement extends past bottom of top
+                 ;; edge
+                 ((and (= x (x (ll j)))
+                       (or (not (point-gap-p (ll j)))
+                           (not (gap (ll j))))
+                       ;; fixme: set falling edge as 'open' or store
+                       ;; Y value for all edges in D?
+                       (not (point-open-p (ll j)))
+                       (> (+ (y (l i)) h)
+                          ;; use height of previous edge, should be
+                          ;; right with way D is generated? maybe
+                          ;; store in gap-y instead?
+                          (y (rr (max 0 (1- j))))))
+                  nil)
+                 ;; at left edge of span at top, and there is a gap,
+                 ;; check gap for support
+                 ((and (= x (x (ll j)))
+                       (typep (ll j) 'point-gap)
+                       (gap (ll j)))
+                  (let* ((p (ll j))
+                         (gy1 (gap-y p))
+                         (gy2 (+ gy1 (gap p)))
+                         (y1 (y (l i)))
+                         (y2 (+ y1 h)))
+                    (or (and (< gy1 y1)
+                             (<=  y2 gy2))
+                        (< y2 gy1))))
+                 (t
+                  ;; otherwise, assume no support? (shouldn't happen?)
+                  t))))
+      (declare (ignorable #'r #'rr))
+      (loop
+        with min-x = (x (l 0))
+        with placed = nil
+        with i = 0 ;; index into C (bottom)
+        with j = 0 ;; index into D (top)
+        repeat 100
+        do (setf min-x (max min-x
                             (x (l i))
                             (x (ll j))))
-                    (p (make-point x (y (l i)))))
-               (when (and (ok j i)
-                          (not (falling j i x))
-                          (not (sliding j i x)))
-                 (ff "place1 @ ~s ~s: ~s~%" i j p)
-                 (push p e)
-                 ;; can't place anything else on this bottom span
-                 (setf placed t)))
-          when (> i m)
-            return nil
-          do ;; advance top or bottom to next candidate
-             (ff "i~s=~s, j~s=~s, placed = ~s~%" i (r i) j (rr j)
-                 placed)
-             (cond
-               ((or placed
-                    (and (< (x (r i))
-                            (x (rr j)))
-                         (< i m))
-                    (< (x (r i)) (x (ll j))))
-                (incf i)
-                (ff "  i -> ~s~%" i))
-               ((and (= (x (rr j))
-                        (x (r i)))
-                     (or (< i m)
-                         (< j p)))
-                ;; we need to be careful when segments end at same
-                ;; point, because both segments are valid at that point.
-                (cond
-                  ;; if either index hits end, increment other one
-                  ((= j p)
-                   #++(break "1")
-                   (incf i))
-                  ((= i m)
-                   #++(break "2")
-                   (incf j))
-                  ;; increment i if it is falling
-                  ((< (y (l (1+ i)))
-                      (y (r i)))
-                   #++(break "3 :~%~s~%~s~%"
-                             (l (1+ i))
-                             (r i))
-                   (incf i))
-                  ;; increment j if it is rising
-                  ((< (y (rr j))
-                      (y (ll (1+ j))))
-                   #++(break "3b :~%~s~%~s~%"
-                             (l (1+ i))
-                             (r i))
-                   (incf j))
-                  ;; otherwise, increment whichever of i,j rises less
-                  ((< (- (y (l (1+ i))) (y (r i)))
-                      (- (y (ll (1+ j))) (y (rr j))))
-                   #++(break "4 :~%~s~%~s~%"
-                             (l (1+ i))
-                             (r i))
-                   (incf i))
-                  (t
-                   #++(break "5 :~%~s~%~s~%"
-                             (l (1+ i))
-                             (r i))
-                   (incf j)))
-                #++(progn
-                     (unless (= i m)
-                       (incf i))
-                     (unless (= j p)
-                       (incf j)))
-                (ff "  ij -> ~s,~s~%" i j))
-               (t
-                (incf j)
-                (ff "  j -> ~s~%" j)
-                (when (and (<= j p)
-                           (< (x (r i)) (x (ll j))))
-                  (ff " i -> ~s~%" i)
-                  (incf i))))
-             (ff "ij -> ~s ~s~%" i j)
-             (setf placed nil)
-          while (and (<= i m) (<= j p))))
-      (nreverse e))))
+
+           ;; if we have a valid placement, add it
+        do (let* ((x (max min-x
+                          (x (l i))
+                          (x (ll j))))
+                  (p (make-point x (y (l i)))))
+             (when (and (ok j i)
+                        (not (falling j i x))
+                        (not (sliding j i x)))
+               (push p e)
+               ;; can't place anything else on this bottom span
+               (setf placed t)))
+        when (> i m)
+          return nil
+        do ;; advance top or bottom to next candidate
+           (cond
+             ((or placed
+                  (and (< (x (r i))
+                          (x (rr j)))
+                       (< i m))
+                  (< (x (r i)) (x (ll j))))
+              (incf i))
+             ((and (= (x (rr j))
+                      (x (r i)))
+                   (or (< i m)
+                       (< j p)))
+              ;; we need to be careful when segments end at same
+              ;; point, because both segments are valid at that point.
+              (cond
+                ;; if either index hits end, increment other one
+                ((= j p)
+                 (incf i))
+                ((= i m)
+                 (incf j))
+                ;; increment i if it is falling
+                ((< (y (l (1+ i)))
+                    (y (r i)))
+                 (incf i))
+                ;; increment j if it is rising
+                ((< (y (rr j))
+                    (y (ll (1+ j))))
+                 (incf j))
+                ;; otherwise, increment whichever of i,j rises less
+                ((< (- (y (l (1+ i))) (y (r i)))
+                    (- (y (ll (1+ j))) (y (rr j))))
+                 (incf i))
+                (t
+                 (incf j))))
+             (t
+              (incf j)
+              (when (and (<= j p)
+                         (< (x (r i)) (x (ll j))))
+                (incf i))))
+           (setf placed nil)
+        while (and (<= i m) (<= j p))))
+    (nreverse e)))
 
 ;; mostly for debugging/testing, so not optimized
 (defun valid-placement-p (hole w h x y &key dump)
@@ -1526,58 +1275,26 @@
   ;; amount)
   (let ((hit-left nil)
         (hit-bottom nil))
-    (labels ((ff (&rest r)
-               (declare (ignorable r))
-               (when dump (apply 'format r)))
-             (check-v (x1 y1 y2)
-               (ff t "check v ~s, ~s-~s~%" x1 y1 y2)
+    (labels ((check-v (x1 y1 y2)
                ;; see if a vertical hole edge crosses or is entirely
                ;; contained in placement
-               (ff t "checkv: (< ~s ~s ~s), (<= ~s ~s ~s) (<= ~s ~s ~s) = ~s ~s ~s~%"
-                   x x1 (+ x w)
-                   y1 y y2
-                   y1 (+ y h) y2
-                   (< x x1 (+ x w))
-                   (<= y1 y y2)
-                   (<= y1 (+ y h) y2))
                (let ((y1 (min y1 y2))
                      (y2 (max y1 y2)))
                  (when (and (< x x1 (+ x w))
                             (or (< y1 y y2)
                                 (< y1 (+ y h) y2)
                                 (<= y y1 y2 (+ y h))))
-                   (ff t "v-edge @ ~s,~s-~s crosses placement." x1 y1 y2)
                    (return-from valid-placement-p nil)))
 
                ;; see if upwards vertical edge overlaps left edge of placement
-               (ff t "checkv2: (= ~s ~s) (< ~s ~s ~s) (< ~s ~s ~s) (<= ~s ~s) (<= ~s ~s) = ~s ~s ~s ~s ~s~%"
-                   x x1
-                   y1 y y2
-                   y1 (+ y h) y2
-                   y y1
-                   y2 (+ y h)
-                   (= x x1)
-                   (< y1 y y2)
-                   (< y1 (+ y h) y2)
-                   (<= y y1)
-                   (<= y2 (+ y h)))
                (when (and (< y1 y2)
                           (= x x1)
                           (or (< y1 y y2)
                               (< y1 (+ y h) y2)
                               (and (<= y y1)
                                    (<= y2 (+ y h)))))
-                 (ff t "v-edge @ ~s,~s-~s hit left~%" x1 y1 y2)
                  (setf hit-left t)))
              (check-h (x1 x2 y1)
-               (ff t "check h ~s-~s, ~s~%" x1 x2 y1)
-               (ff t "checkh: (< ~s ~s ~s), (<= ~s ~s ~s) (<= ~s ~s ~s) = ~s ~s ~s~%"
-                   y y1 (+ y h)
-                   x1 x x2
-                   x1 (+ x w) x2
-                   (< y y1 (+ y h))
-                   (< x1 x x2)
-                   (< x1 (+ x w) x2))
                ;; see if horizontal hole edge crosses placement
                (let ((x1 (min x1 x2))
                      (x2 (max x1 x2)))
@@ -1585,19 +1302,7 @@
                             (or (< x1 x x2)
                                 (< x1 (+ x w) x2)
                                 (<= x x1 x2 (+ x w))))
-                   (ff t "h-edge @ ~s-~s,~s crosses placement." x1 x2 y1)
                    (return-from valid-placement-p nil)))
-               (ff t "checkh2: (= ~s ~s) (< ~s ~s ~s) (< ~s ~s ~s) (<= ~s ~s) (<= ~s ~s) = ~s ~s ~s ~s ~s~%"
-                   y y1
-                   x1 x x2
-                   x1 (+ x w) x2
-                   x x1
-                   x2 (+ x w)
-                   (= y y1)
-                   (< x1 x x2)
-                   (< x1 (+ x w) x2)
-                   (<= x x1)
-                   (<= x2 (+ x w)))
                ;; see if leftwards horizontal edge overlaps bottom
                ;; edge of placement
                (when (and (< x2 x1)
@@ -1606,14 +1311,11 @@
                               (< x2 (+ x w) x1)
                               (and (<= x x2)
                                    (<= x1 (+ x w)))))
-                 (ff t "h-edge @ ~s-~s,~s hit bottom~%" x1 x2 y1)
                  (setf hit-bottom t))))
       (do-hole-vertices/next (v (h-vertices hole) dx dy end)
         (unless (or dx dy)
           (setf dx (- (hv-x v) (hv-x (dll-prev v))))
           (setf dy (- (hv-y v) (hv-y (dll-prev v)))))
-        (ff t "vertex (~s ~s),~s,~s~%"
-            (hv-x v) (hv-y v) dx dy)
 
         (cond
           ((and (zerop dx) (zerop dy))
@@ -1628,7 +1330,6 @@
            (check-h (hv-x (dll-prev v)) (hv-x v)
                     (hv-y v)))
           (t (break "??"))))
-      (ff t "exit ~s ~s~%" hit-bottom hit-left)
       (and hit-bottom hit-left))))
 
 (defun find-all-placements/sh (subhole w h)
@@ -1653,126 +1354,3 @@
     r))
 #++
 (ql:quickload '(binpack parachute))
-
-(defun transform-points (p dx dy s)
-  (loop for (x y) on p by #'cddr
-        collect (* s (+ x dx))
-        collect (* s (+ y dy))))
-
-
-#++
-(let ((h (transform-points binpack-test::*hole-fig6b* 2 6 16)))
-  (let ((h2 (%make-hole-from-points h)))
-    (binpack2-vis::set-hole h2 3 16)))
-#++
-(let* ((x1 2)
-       (y1 6)
-       (h #++ '(2 6 2 7 4 7 4 8 5 8 5 9 1 9 1 10 0 10 0 11 3 11 3 12 9 12 9 13 14 13 14 14 5
-                14 5 15 11 15 11 16 17 16 17 17 22 17 22 13 26 13 26 0 15 0 15 1 6 1 6 2 9 2 9
-                3 16 3 16 4 11 4 11 10 7 10 7 5 4 5 4 6)
-          (print (transform-points binpack-test::*hole-fig6* 2 6 1))))
-  (let ((h2 (%make-hole-from-points h)))
-    (list (valid-placement-p h2 20 1 0 10)
-          (valid-placement-p h2 20 1 6 1)
-          (valid-placement-p h2 20 1 3 11)
-          h2)))
- 
-
-#++
-(let ((h (transform-points (car (aref binpack-test::*placing-tests* 13))
-                           -11 -2 16)))
-  (let ((h2 (%make-hole-from-points h)))
-    (binpack2-vis::set-hole h2 1 4)
-    h2))
-#++
-(let ((h (transform-points (car (aref binpack-test::*placing-tests* 2))
-                           23 5 16)))
-  (let ((h2 (%make-hole-from-points h)))
-    (binpack2-vis::set-hole h2 1 1)
-    h2))
-#++
-(let* ((h (transform-points binpack-test::*hole-fig6b* -11 -2 16))
-       (wx (* 16 1))
-       (wy (* 16 10))
-       (h2 (%make-hole-from-points h))
-       (px (find-all-placements h2 wx wy)))
-  (list
-   (mapcar (lambda (p) (valid-placement-p h2 wx wy (x p) (y p))) px)
-   px))
-#++
-(let* ((h (transform-points binpack-test::*hole-fig6b* 0 0 1))
-       (h2 (%make-hole-from-points h))
-       (try 0)
-       (ok 0)
-       (placed 0)
-       (bad 0))
-  (format t "start~%")
-  (time
-   (loop for w from 1 below 28
-         do (loop for h from 1 below 25
-                  for px = (let ((*standard-output* (make-broadcast-stream)))
-                             (find-all-placements h2 w h))
-                  #+do (incf try)
-                  #++   (when (car px)
-                          (format t "~s,~s:"
-                                  w h)
-                          (terpri)
-
-                          (let ((check (mapcar (lambda (p) (valid-placement-p
-                                                            h2 w h (x p) (y p)))
-                                               px)))
-                            (format t " ~s~%" check)
-                            (unless (notany 'null check)
-                              (incf bad))
-                            (incf placed (count 't check))
-                            (incf ok))))))
-  (format t "~s / ~s / ~s = ~s~%" bad ok try placed))
-
-
-#++
-(let ((h (transform-points binpack-test::*hole-fig6b* -11 -2 1)))
-  (let ((h2 (%make-hole-from-points h)))
-    (binpack2-vis::set-hole h2)
-    (do-dll/next (sh (h-subholes h2))
-      (format t "(~s ~s)~%" (sh-end sh)
-              (loop for d across (f-d (sh-bottom sh))
-                    for h across (f-h (sh-bottom sh))
-                    do (assert (= (x d) (x h)))
-                       (assert (< (y d) (y h)))
-                    collect (list (x d) (y d) (y h)))))
-    (loop for l from 1 below 28
-          for i = 2
-          do (do-dll/next (sh (h-subholes h2))
-               (format
-                t "(check-c ~s ~s '~s)~%"
-                i l
-                (let ((c (let ((*standard-output* (make-broadcast-stream)))
-                           (make-c (sh-bottom sh) l (sh-end sh)))))
-                  (loop for (a b) on c by #'cddr
-                        do (assert (= (y a) (y b)))
-                           (assert (<= (x a) (x b)))
-                        collect (list (x a) (y a) (- (x b) (x a))))))
-               (incf i)))
-    h2))
-#++
-(let ((h (transform-points binpack-test::*sh-test1* 0 0 1)))
-  (binpack2-vis::set-hole (%make-hole-from-points h) 4 1)
-  #++(binpack2-vis::finish-shape binpack2-vis::*w*)
-  #++(binpack2-vis::add-shape-points h))
-#++
-(let ((h (transform-points binpack-test::*sh-test1b*
-                           0 0 1)))
-  (binpack2-vis::set-hole (%make-hole-from-points h) 2 2)
-  #++(binpack2-vis::finish-shape binpack2-vis::*w*)
-  #++(binpack2-vis::add-shape-points h))
-
-#++(let ((h (transform-points binpack-test::*hole-fig4*
-                           0 0 1)))
-  (binpack2-vis::set-hole (%make-hole-from-points h) 1 5)
-  #++(binpack2-vis::finish-shape binpack2-vis::*w*)
-  #++(binpack2-vis::add-shape-points h)
-
-)
-
-#++
-(%make-hole-from-points binpack-test::*sh-test1*)

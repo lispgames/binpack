@@ -5,6 +5,12 @@
 
 (define-test binpack)
 
+(defun transform-points (p dx dy s)
+  (loop for (x y) on p by #'cddr
+        collect (* s (+ x dx))
+        collect (* s (+ y dy))))
+
+
 
 (defun dll-nth (d n)
   (loop with e = d repeat n do (setf e (b::dll-next e)) finally (return e)))
@@ -767,7 +773,7 @@
          (h1 (- y2 y1))
          (hole (finish
                 (b::%make-hole-from-points
-                 (print (b::transform-points (print points)
+                 (print (transform-points (print points)
                                              (print (- x1))
                                              (print(- y1)) 1)
                         *debug-io*))))
