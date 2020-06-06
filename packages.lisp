@@ -12,4 +12,7 @@
            #:with-rect
            #:rect-initargs
            #:expand-and-retry
-           #:expand-and-continue))
+           #:expand-and-continue
+           #:start-pack
+           #:pack-1
+           #:reset-pack))

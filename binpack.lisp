@@ -23,6 +23,11 @@
                        ,@(when h `((,h (h ,rect)))))
        ,@body)))
 
+(defun point-in-rect (rect px py)
+  (with-rect (nil x y w h) rect
+    (and (<= x px (+ x w))
+         (<= y py (+ y h)))))
+
 (defgeneric rect-initargs (rect)
   (:method-combination append))
 
@@ -71,6 +76,7 @@
 (defun rl (rect)
   (with-rect (nil x y w h) rect
     (list x y w h)))
+
 (defun grow-rects (rects dx dy)
   (destructuring-bind (x1 y1)
       (loop for r in rects
@@ -261,6 +267,22 @@
              (stable-sort rects #'> :key (lambda (x) (apply-fn fn x)))))
     (sort-by (sort-by rects #'min) #'max)))
 
+(defstruct pack-state
+  (free-rects nil))
+
+(defun start-pack (width height)
+  (make-pack-state :free-rects (list (rect nil 0 0 width height))))
+
+(defun reset-pack (state width height)
+  (setf (pack-state-free-rects state) (list (rect nil 0 0 width height))))
+
+
+(defun pack-1 (rect state)
+  (destructuring-bind (placed new-free-rects)
+      (place-rect rect (pack-state-free-rects state))
+    (setf (pack-state-free-rects state) new-free-rects)
+    placed))
+
 (defun pack (rects width height)
   (loop
     (restart-case
@@ -268,11 +290,10 @@
               (maxh 0))
           (return-from pack
             (values
-             (loop :with free-rects = (list (rect nil 0 0 width height))
+             (loop :with free-rects = (start-pack width height)
                    :for rect :in (sort-rects (copy-seq rects))
-                   :for (placed new-free-rects) = (place-rect rect free-rects)
-                   :do (setf free-rects new-free-rects)
-                       (setf maxw (max maxw (+ (x placed) (w placed))))
+                   :for placed = (place-rect rect free-rects)
+                   :do (setf maxw (max maxw (+ (x placed) (w placed))))
                        (setf maxh (max maxh (+ (y placed) (h placed))))
                    :collect placed)
              maxw maxh)))
