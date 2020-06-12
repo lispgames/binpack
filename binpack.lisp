@@ -77,6 +77,16 @@
   (with-rect (nil x y w h) rect
     (list x y w h)))
 
+(defstruct pack-state
+  (free-rects nil))
+
+(defun start-pack (width height)
+  (make-pack-state :free-rects (list (rect nil 0 0 width height))))
+
+(defun reset-pack (state width height)
+  (setf (pack-state-free-rects state) (list (rect nil 0 0 width height))))
+
+
 (defun grow-rects (rects dx dy)
   (destructuring-bind (x1 y1)
       (loop for r in (pack-state-free-rects rects)
@@ -270,15 +280,6 @@
            (sort-by (rects fn)
              (stable-sort rects #'> :key (lambda (x) (apply-fn fn x)))))
     (sort-by (sort-by rects #'min) #'max)))
-
-(defstruct pack-state
-  (free-rects nil))
-
-(defun start-pack (width height)
-  (make-pack-state :free-rects (list (rect nil 0 0 width height))))
-
-(defun reset-pack (state width height)
-  (setf (pack-state-free-rects state) (list (rect nil 0 0 width height))))
 
 
 (defun pack-1 (rect state)
