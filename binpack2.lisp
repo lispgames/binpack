@@ -1455,10 +1455,10 @@
     r))
 
 (defclass placement-span (dll)
-  ((x1 :initarg :x1 :reader x1)
-   (y1 :initarg :y1 :reader y1)
-   (x2 :initarg :x2 :reader x2)
-   (y2 :initarg :y2 :reader y2)
+  ((x1 :initarg :x1 :accessor x1)
+   (y1 :initarg :y1 :accessor y1)
+   (x2 :initarg :x2 :accessor x2)
+   (y2 :initarg :y2 :accessor y2)
    ;; list of keywords indicating how span touches quad (or that it is
    ;; a gap between contacts). see intersect-hole-with-quad for values
    (classify :initarg :classify :accessor classify)
@@ -1501,8 +1501,9 @@
 (defun p (v)
   (when v (list (hv-x v) (hv-y v))))
 
-(defun overlap-p (span v1 v2)
-  (let* ((x1 (x1 span))
+(defun overlap-p (span v1)
+  (let* ((v2 (dll-next v1))
+         (x1 (x1 span))
          (y1 (y1 span))
          (x2 (x2 span))
          (y2 (y2 span))
@@ -1542,90 +1543,144 @@
               (t
                nil))))
       (format t "   = ~s~%" r)
-      r))
-)
+      r)))
 
-(defun calculate-overlap (span v1 v2)
-  (let* ((x1 (x1 span))
+(defun calculate-overlap (span v1)
+  (let* ((v2 (dll-next v1))
+         (x1 (x1 span))
          (y1 (y1 span))
          (x2 (x2 span))
          (y2 (y2 span))
-         (xmin (min x1 x2))
-         (xmax (max x1 x2))
-         (ymin (min y1 y2))
-         (ymax (max y1 y2)))
+         (x3 (hv-x v1))
+         (y3 (hv-y v1))
+         (x4 (hv-x v2))
+         (y4 (hv-y v2))
+         (den (- (* (- x1 x2)
+                    (- y3 y4))
+                 (* (- y1 y2)
+                    (- x3 x4)))))
+
     (format t "  calculate span ~s,~s - ~s,~s | edge ~s - ~s~%"
             x1 y1 x2 y2 (p v1) (p v2))
-    (let ((r
-            (cond
-              ;; edge and span start at same point, and are co-linear
-              ((or (and (= x1 x2 (hv-x v1) (hv-x v2))
-                        (= (hv-y v1) y1))
-                   (and (= y1 y2 (hv-y v1) (hv-y v2))
-                        (= (hv-x v1) x1)))
-               :exact-start)
-              ;; edge starts somewhere in span, and is co-linear
-              ((or (and (= x1 x2 (hv-x v1) (hv-x v2))
-                        (< ymin (hv-y v1) ymax))
-                   (and (= y1 y2 (hv-y v1) (hv-y v2))
-                        (< xmin (hv-x v1) xmax)))
-               :start)
-              ;; edge ends at span
-              ((or (and (= x1 x2 (hv-x v2))
-                        (<= ymin (hv-y v1) ymax))
-                   (and (= y1 y2 (hv-y v2))
-                        (<= xmin (hv-x v1) xmax)))
-               :to)
-              ;; edge ends somewhere in span, and is co-linear
-              ((or (and (= x1 x2 (hv-x v1) (hv-x v2))
-                        (<= ymin (hv-y v2) ymax))
-                   (and (= y1 y2 (hv-y v1) (hv-y v2))
-                        (<= xmin (hv-x v2) xmax)))
-               :end)
-              ;; doesn't intersect
-              (t
-               nil))))
-      (format t " = ~s~%" r)
-      r))
+    (labels ((d (y y1 y2)
+               (/ (- y y1)
+                  (- y1 y2)))
+             (parallel (x1 y1 x2 y2 x3 y3 x4 y4)
+               ;; written for vertical lines (x1=x2=x3=x4), called with
+               ;; x,y swapped for horizontal
+               (when (= x1)
+                (let ((symin (min y1 y2))
+                      (symax (max y1 y2))
+                      (vymin (min y3 y4))
+                      (vymax (max y3 y4)))
+                  (let ((start (= y1 y3)) ;; both start at same point
+                        (end (= y2 y4))   ;; both end at same point
+                        ;; edge starts in span
+                        (mid-start (< symin y3 symax))
+                        ;; edge ends in span
+                        (mid-end (< symin y4 symax))
+                        ;; span starts inside edge
+                        (overlap-start (< vymin y1 vymax))
+                        ;; span ends inside edge
+                        (overlap-end (< vymin y2 vymax)))
+                    (cond
+                      ;; edge and span coincide exactly
+                      ((and start end)
+                       (values :exact 0.0 1.0 x1 y1 x2 y2))
+                      ;; edge and span start at same point, edge ends first
+                      ((and start mid-end)
+                       (values :start-middle 0 (d y2 y3 y4)
+                               x1 y1 x3 y3))
+                      ;; edge and span start at same point, span ends first
+                      ((and start overlap-end)
+                       (values :after-exact 0 (d y2 y3 y4)
+                               x1 y1 x2 y2))
+                      ;; edge starts in middle of span, both end at same point
+                      ((and mid-start end)
+                       (values :middle-end (d y1 y3 y4) 1
+                               x3 y3 x2 y2))
+                      ;; edge starts before span, both end at same point
+                      ((and overlap-start end)
+                       (values :before-exact (d y1 y3 y4) 1
+                               x1 y1 x2 y2))
+                      ;; edge extends past edge on both sides
+                      ((and overlap-start overlap-end)
+                       (values :spans
+                               (d y1 y3 y4)
+                               (d y2 y3 y4)
+                               x1 y1 x2 y2))
+
+                      ;; edge starts before span, stops in middle
+                      ((and overlap-start mid-end)
+                       (values :before
+                               (d y1 y3 y4)
+                               (d y2 y3 y4)
+                               x1 y1 x2 y2))
+                      ;; edge starts in middle of span, ends after end
+                      ((and mid-start overlap-end)
+                       (values :after
+                               (d y1 y3 y4)
+                               (d y2 y3 y4)
+                               x1 y1 x2 y2))
+                      (start
+                       (values :from 0 0 x3 y3 x3 y3))
+                      (mid-start
+                       (break "shouldn't happen?"))
+                      (end
+                       (values :to-exact 1 1 x4 y4 x4 y4))
+                      (mid-end
+                       (values :to 1 1 x4 y4 x4 y4))
+                      (t
+                       (break "start=~s, end=~s~%mid-start=~s, mid-end=~s~%~
+                              overlap-start=~s, overlap-end=~s,"
+                              start end mid-start mid-end overlap-start overlap-end))))))))
+      (cond
+        ((and (zerop den) (= x1 x2 x3 x4))
+         ;;lines are parallel and vertical
+         (parallel x1 y1 x2 y2 x3 y3 x4 y4))
+        ((and (zerop den) (= y1 y2 y3 y4))
+         ;;lines are parallel and horizontal (reuse code from vertical,
+         ;;with axes swapped
+         (multiple-value-bind (type d1 d2 x1 y1 x2 y2)
+             (parallel y1 x1 y2 x2 y3 x3 y4 x4)
+           (values type d1 d2 y1 x1 y2 x2))
+         )
+        ((zerop den)
+         ;; lines are parallel and not on same line
+         nil
+         )
+        ((= x1 x2)
+         ;; span is horizontal, check ends of line for intersection
+         (cond
+           ((and (= x3 x1) (<= y1 y3 y2))
+            ;; edge starts on segment
+            (values :to 0.0 0.0 x3 y3 x3 y3)
+            )
+           ((and (= x4 x1) (<= y1 y4 y2))
+            ;; edge ends on segment
+            (values :to 1.0 1.0 x4 y4 x4 y4)
+            )))
+        ((= y1 y2)
+         (cond
+           ((and (= y3 y1) (<= x1 x3 x2))
+            ;; edge starts on segment
+            (values :to 0.0 0.0 x3 y3 x3 y3)
+            )
+           ((and (= y4 y1) (<= x1 x4 x2))
+            ;; edge ends on segment
+            (values :to 1.0 1.0 x4 y4 x4 y4)
+            ))
+
+         )
+        (t
+         (break "?"))
+
+      
+
+        ))
+    )
   )
 
-(defun classify-overlap (d1 d2)
-  (cond
-    ((< d1 0 1 d2)
-     ;; edge spans quad
-     :spans)
-    ((and (= d1 0) (= d2 1))
-     ;; edge and quad edge are exact match
-     :exact)
-    ((< 0 d1 d2 1)
-     ;; edge touches middle of quad but not either
-     ;; edge
-     :middle)
-    ((and (< 0 d1 1))
-     ;; edge starts before quad
-     (if (= d2 1)
-         :before-exact                  ;; and extends to far edge
-         :before))                      ;; or ends in middle
-    ((and (< 0 d2 1))
-     ;; edge ends after quad
-     (if (= d1 0)
-         :after-exact ;; and starts at first corner of quad
-         :after))     ;; or starts in middle
-    ((<= d2 d1 0)
-     ;; edge starts at quad, but doesn't overlap
-     :away)
-    ((>= d1 d2 1)
-     ;; edge ends at quad, but doesn't overlap
-     :to)
-    ((or (= d1 0) (= d2 1))
-     (if (= d1 0)
-         ;; starts at corner of quad, ends in middle
-         :start-middle
-         ;; starts in middle, ends at corner of quad
-         :middle-end))
-    (t (break "classify this contact~%~s ~s~%"
-              d1 d2)
-       :???)))
 
 (defun intersect-hole-with-quad (hole placement)
   ;; return spans of HOLE that overlap edges of quad defined by
@@ -1662,8 +1717,8 @@
     ;; use in next steps, but not many edges in worst case, and don't
     ;; need to do full calculation here)
     ;;
- 
-    (let ((contact (overlap-p bottom v (dll-next v))))
+
+    (let ((contact (overlap-p bottom v)))
       (ecase contact
         ;; if span and edge don't intersect, walk backwards on hole edge
         ;; until it is right of placement, then walk forwards until we get
@@ -1678,7 +1733,7 @@
                  do (break "couldn't find contact or point past placement?"))
          ;; then move CW until we find a contact with bottom, and
          ;; return it
-         (loop for c = (overlap-p bottom v (dll-next v))
+         (loop for c = (overlap-p bottom v)
                for i from 0
                do (format t " ~s <- ~s~%" c (p v))
                until c
@@ -1695,9 +1750,9 @@
         ;; back up to :to edge
         (:start
          (setf v (dll-prev v))
-         (unless (eql :to (overlap-p bottom v (dll-next v)))
+         (unless (eql :to (overlap-p bottom v))
            (break "got ~s instead of :to contact?"
-                  (eql :to (overlap-p bottom v (dll-next v))))))
+                  (eql :to (overlap-p bottom v)))))
 
 
         ;; hole edge starts at lower right corner, so could continue
@@ -1712,7 +1767,7 @@
            do ;; DO needed for loop-finish
               (setf v (dll-prev v))
               (setf r (dll-prev r))
-              (let ((c (overlap-p r v (dll-next v))))
+              (let ((c (overlap-p r v)))
                 (ecase c
                   (:exact-start ;; keep looping
                    (assert (not (eql r bottom))))
@@ -1730,10 +1785,10 @@
             (hv-x v) (hv-y v) (hv-x (dll-next v)) (hv-y (dll-next v)))
     (format t "  p span = ~s,~s -> ~s,~s~%"
             (x1 r) (y1 r) (x2 r) (y2 r))
-    (format t "  contact ?= ~s~%" (overlap-p r v (dll-next v)))
+    (format t "  contact ?= ~s~%" (overlap-p r v))
     (format t "  full contact = ~s~%"
-            (multiple-value-list (calculate-overlap r v (dll-next v))))
-    
+            (multiple-value-list (calculate-overlap r v)))
+
 
 
     ;; walk vertices of hole, checking for overlaps. Follow Q->N
@@ -1745,9 +1800,126 @@
     ;; we only check current span of placement, and advance it when we
     ;; fill the span with contacts, see a perpendicular edge that
     ;; straddles it, or see a parallel span that extends past it
+    (flet ((len (a b c d)
+             (sqrt (+ (expt (- a c) 2)
+                      (expt (- b d) 2)))))
+      (loop
+        with v1 = v
+        do (multiple-value-bind (type d1 d2 x1 y1 x2 y2)
+               (calculate-overlap r v)
+             (let ((edge (second (classify r)))
+                   (next (dll-next v)))
+               (when type
+                 (let ((l (len x1 y1 x2 y2)))
+                   (incf len l)
+                   (format t "test edge ~s -> ~s~%" (p v) (p next))
+                   (format t "     span ~s: ~s,~s -> ~s~s~%"
+                           (classify r) (x1 r) (y1 r) (x2 r) (y2 r))
+                   (format t "  == ~s: ~s ~s = ~s,~s - ~s,~s~%"
+                           type d1 d2 x1 y1 x2 y2)
+                   (ecase type
+                     ((:exact :before-exact :after-exact :spans)
+                      ;; entire span is covered by edge, replace it completely
+                      (change-class r 'overlap-span
+                                    :start d1
+                                    :end d2
+                                    :length l
+                                    :a v
+                                    :b next
+                                    :classify (list type edge)
+                                    :x1 x1 :y1 y1
+                                    :x2 x2 :y2 y2))
+                     (:from
+                      (let ((n (make-instance
+                                'overlap-span
+                                :start d1
+                                :end d2
+                                :length l
+                                :a v
+                                :b next
+                                :classify (list :from edge)
+                                :x1 x1 :y1 y1
+                                :x2 x2 :y2 y2)))
+                        ;; if both start at same point and diverge, we
+                        ;; need a contact at the corner, then continue
+                        ;; checking current span (shouldn't be able to
+                        ;; diverge in middle since we should have
+                        ;; already seen a contact along span and split
+                        ;; it
+                        (insert-before r n)))
+                     (:to
+                      (let ((n (make-instance
+                                'overlap-span
+                                :start d1
+                                :end d2
+                                :length l
+                                :a v
+                                :b next
+                                :classify (list :to edge)
+                                :x1 x1 :y1 y1
+                                :x2 x2 :y2 y2))
+                            ;; split the span into 2, with contact in
+                            ;; the middle, so we can match remaining
+                            ;; span against next edge
+                            (np (make-instance
+                                 'placement-span
+                                 :classify (classify r)
+                                 :x1 x1 :y1 y1
+                                 :x2 (x2 r) :y2 (y2 r))))
+                        (setf (x2 r) x1
+                              (y2 r) y1)
+                        (insert-after r n)
+                        (insert-after n np)
+                        (setf r np))))))
+               (ecase edge
+                 (:bottom
+                  (format t "advance from bottom? ~s ~s ~s~%"
+                          (<= (hv-x next) px2)
+                          (> (hv-y v) py2)
+                          (> (hv-y next) py2))
+                  (when (or (<= (hv-x next) px2)
+                            (> (hv-y v) py2)
+                            (> (hv-y next) py2))
+                    (setf r (dll-next r)))
+                  (setf v next))
+                 (:left
+                  (format t "advance from left? ~s | ~s ~s ~s~%"
+                          (> (hv-y next) py2)
+                          (>= (hv-y next) py2)
+                          (> (hv-x v) px2)
+                          (> (hv-x next) px2))
+                  (if (> (hv-y next) py2)
+                      ;; todo: can skip V directly to falling edge if hv-y2
+                      ;; is strictly greater than py2, since it won't go
+                      ;; lower until then (can touch top or right edge of
+                      ;; placement)
+                      (setf v next)
+                      (setf v next)
+                      )
+                  
+                  (when (or (> (hv-y next) py2)
+                            (> (hv-x v) px2)
+                            (> (hv-x next) px2))
+                    (setf r (dll-next r))))
+                 (:top
+                  ;; todo
+                  (if (> (hv-y next) py2)
+                      ;; todo: skip V directly to falling edge
+                      (setf v next)
+                      (setf v next))
+                  (when (or (> (hv-x v) px2)
+                            (> (hv-x next) px2))
+                    (setf r (dll-next r))))
+                 (:right
+                  (if (> (hv-y next) py2)
+                      (setf v next)
+                      (setf v next))
+                  )
 
+                 )))
+        until (eql v v1)))
 
-
+    #++(break "r ~s~%" r)
     (values r len)))
 
 (let ((h (init-hole 8 8)))
@@ -2115,6 +2287,7 @@
                 do (format t " ~s/~s = ~s~%" i l (mapcar #'p g)))
           (cond
             ((zerop l)
+             (break "no gaps?")
              (format t "filled hole ~s~%" hole)
              (return-from remove-quad-from-hole nil))
             ((> l 1)
@@ -2137,7 +2310,7 @@
                          (loop for (from to) on verts
                                while to
                                do (reconnect from to))))
-               
+
 
                (loop for from being the hash-keys of update-next
                        using (hash-value to)
@@ -2226,7 +2399,7 @@
 
                           ((and dx (minusp dx))
                            ;; found Q or end vertex for this subhole.
-                           ;; 
+                           ;;
                            (unless q
                              (setf q (dll-prev v)))
                            (setf leftp t))
@@ -2343,7 +2516,7 @@
                               (hv-x w)
                               (hv-x (dll-next w)))
                        (delete-node w)))
-                   ;; move the point 
+                   ;; move the point
                    (setf q to)
                    ;; find new N and W points
                    (when (hv-classify q)
