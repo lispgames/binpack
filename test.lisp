@@ -87,7 +87,34 @@
       (is = 2 (b::dll-length a))
       (is eql a (finish (b::delete-node d)))
       (is = 1 (b::dll-length a))
-      (is eql nil (b::delete-node a)))))
+      (is eql nil (b::delete-node a))))
+
+
+  (let ((a (finish (make-instance 'b::dll)))
+        (b (finish (make-instance 'b::dll)))
+        (c (finish (make-instance 'b::dll)))
+        (d (finish (make-instance 'b::dll))))
+    (finish (b::insert-before a b))
+    (finish (b::insert-before b c))
+    (finish (b::insert-before c d))
+    (is eql 4 (b::dll-length a))
+    (is eql 4 (b::dll-length b))
+    (is eql 4 (b::dll-length c))
+    (is eql 4 (b::dll-length d))
+    (is eql b (b::dll-prev a))
+    (is eql c (b::dll-prev b))
+    (is eql d (b::dll-prev c))
+    (is eql a (b::dll-prev d))
+    (is eql d (b::dll-next a))
+    (is eql a (b::dll-next b))
+    (is eql b (b::dll-next c))
+    (is eql c (b::dll-next d))
+    (is equalp
+        (list b c d a)
+        (let (l)
+          (b::do-dll/next (i a)
+            (push i l))
+          l))))
 
 (define-test (binpack deq)
   (let ((deq (finish (b::make-deq))))
@@ -773,10 +800,7 @@
          (h1 (- y2 y1))
          (hole (finish
                 (b::%make-hole-from-points
-                 (print (transform-points (print points)
-                                             (print (- x1))
-                                             (print(- y1)) 1)
-                        *debug-io*))))
+                 (transform-points points (- x1) (- y1) 1))))
          (ref (make-hash-table :test 'equalp))
          (place (make-hash-table :test 'equalp)))
     (format *debug-io* "~%~%testing ~s @ ~s ~s~%" points (- x1) (- y1))
@@ -818,14 +842,111 @@
   (test-placing *sh-test1*)
   (test-placing *sh-test1b*)
   (test-placing *hole-box*))
+
+(define-test (binpack misc)
+  (let ((a (finish (make-instance 'b::placement :x 1 :y 5 :w 2 :h 3))))
+    (true (b::point-on-rect 1 5 a))
+    (true (b::point-on-rect 1 6 a))
+    (true (b::point-on-rect 1 8 a))
+    (true (b::point-on-rect 2 5 a))
+    (true (b::point-on-rect 3 5 a))
+    (true (b::point-on-rect 2 8 a))
+    (true (b::point-on-rect 3 8 a))
+    (false (b::point-on-rect 0 5 a))
+    (false (b::point-on-rect 0 6 a))
+    (false (b::point-on-rect 0 8 a))
+    (false (b::point-on-rect 4 5 a))
+    (false (b::point-on-rect 4 6 a))
+    (false (b::point-on-rect 4 8 a))
+    (false (b::point-on-rect 2 6 a))
+    (flet ((hv (x y)
+             (make-instance 'b::hole-vertex :x x :y y)))
+      (true (b::hv-span-overlaps-rect (hv 1 0) (hv 1 5) a))
+      (true (b::hv-span-overlaps-rect (hv 1 0) (hv 1 6) a))
+      (true (b::hv-span-overlaps-rect (hv 1 0) (hv 1 8) a))
+      (true (b::hv-span-overlaps-rect (hv 1 0) (hv 1 10) a))
+
+      (true (b::hv-span-overlaps-rect (hv 1 5) (hv 1 5) a))
+      (true (b::hv-span-overlaps-rect (hv 1 5) (hv 1 6) a))
+      (true (b::hv-span-overlaps-rect (hv 1 5) (hv 1 8) a))
+      (true (b::hv-span-overlaps-rect (hv 1 5) (hv 1 10) a))
+
+      (true (b::hv-span-overlaps-rect (hv 1 7) (hv 1 5) a))
+      (true (b::hv-span-overlaps-rect (hv 1 7) (hv 1 6) a))
+      (true (b::hv-span-overlaps-rect (hv 1 7) (hv 1 8) a))
+      (true (b::hv-span-overlaps-rect (hv 1 7) (hv 1 10) a))
+
+      (true (b::hv-span-overlaps-rect (hv 1 8) (hv 1 5) a))
+      (true (b::hv-span-overlaps-rect (hv 1 8) (hv 1 6) a))
+      (true (b::hv-span-overlaps-rect (hv 1 8) (hv 1 8) a))
+      (true (b::hv-span-overlaps-rect (hv 1 8) (hv 1 10) a))
+
+      (true (b::hv-span-overlaps-rect (hv 1 10) (hv 1 5) a))
+      (true (b::hv-span-overlaps-rect (hv 1 10) (hv 1 6) a))
+      (true (b::hv-span-overlaps-rect (hv 1 10) (hv 1 8) a))
+      (false (b::hv-span-overlaps-rect (hv 1 10) (hv 1 10) a))
+
+
+      (true (b::hv-span-overlaps-rect (hv 3 0) (hv 3 5) a))
+      (true (b::hv-span-overlaps-rect (hv 3 0) (hv 3 6) a))
+      (true (b::hv-span-overlaps-rect (hv 3 0) (hv 3 8) a))
+      (true (b::hv-span-overlaps-rect (hv 3 0) (hv 3 10) a))
+      (true (b::hv-span-overlaps-rect (hv 3 5) (hv 3 5) a))
+      (true (b::hv-span-overlaps-rect (hv 3 5) (hv 3 6) a))
+      (true (b::hv-span-overlaps-rect (hv 3 5) (hv 3 8) a))
+      (true (b::hv-span-overlaps-rect (hv 3 5) (hv 3 10) a))
+      (true (b::hv-span-overlaps-rect (hv 3 7) (hv 3 5) a))
+      (true (b::hv-span-overlaps-rect (hv 3 7) (hv 3 6) a))
+      (true (b::hv-span-overlaps-rect (hv 3 7) (hv 3 8) a))
+      (true (b::hv-span-overlaps-rect (hv 3 7) (hv 3 10) a))
+      (true (b::hv-span-overlaps-rect (hv 3 8) (hv 3 5) a))
+      (true (b::hv-span-overlaps-rect (hv 3 8) (hv 3 6) a))
+      (true (b::hv-span-overlaps-rect (hv 3 8) (hv 3 8) a))
+      (true (b::hv-span-overlaps-rect (hv 3 8) (hv 3 10) a))
+      (true (b::hv-span-overlaps-rect (hv 3 10) (hv 3 5) a))
+      (true (b::hv-span-overlaps-rect (hv 3 10) (hv 3 6) a))
+      (true (b::hv-span-overlaps-rect (hv 3 10) (hv 3 8) a))
+      (false (b::hv-span-overlaps-rect (hv 3 10) (hv 3 10) a))
+
+
+      (false (b::hv-span-overlaps-rect (hv 2 0) (hv 1 5) a))
+      (false (b::hv-span-overlaps-rect (hv 2 0) (hv 1 6) a))
+      (false (b::hv-span-overlaps-rect (hv 2 0) (hv 1 8) a))
+      (false (b::hv-span-overlaps-rect (hv 2 0) (hv 1 10) a))
+      (false (b::hv-span-overlaps-rect (hv 2 5) (hv 1 6) a))
+      (false (b::hv-span-overlaps-rect (hv 2 5) (hv 1 8) a))
+      (false (b::hv-span-overlaps-rect (hv 2 5) (hv 1 10) a))
+      (false (b::hv-span-overlaps-rect (hv 2 7) (hv 1 5) a))
+      (false (b::hv-span-overlaps-rect (hv 2 7) (hv 1 6) a))
+      (false (b::hv-span-overlaps-rect (hv 2 7) (hv 1 10) a))
+      (false (b::hv-span-overlaps-rect (hv 2 8) (hv 1 5) a))
+      (false (b::hv-span-overlaps-rect (hv 2 8) (hv 1 6) a))
+      (false (b::hv-span-overlaps-rect (hv 2 8) (hv 1 10) a))
+      (false (b::hv-span-overlaps-rect (hv 2 10) (hv 1 5) a))
+      (false (b::hv-span-overlaps-rect (hv 2 10) (hv 1 6) a))
+      (false (b::hv-span-overlaps-rect (hv 2 10) (hv 1 8) a))
+      (false (b::hv-span-overlaps-rect (hv 2 10) (hv 1 10) a))
+
+      (true (b::hv-span-overlaps-rect (hv 0 5) (hv 1 5) a))
+      (true (b::hv-span-overlaps-rect (hv 0 5) (hv 10 5) a))
+      (true (b::hv-span-overlaps-rect (hv 0 8) (hv 1 8) a))
+      (true (b::hv-span-overlaps-rect (hv 0 8) (hv 10 8) a))
+
+
+)
+
+)
+)
+
 #++
 (time
  (test 'binpack))
 
 
 
+
 #++
-(test 'placing :report 'interactive)
+(test 'dll :report 'interactive)
 
 #++
 (untrace)
