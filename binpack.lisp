@@ -79,7 +79,7 @@
 
 (defun grow-rects (rects dx dy)
   (destructuring-bind (x1 y1)
-      (loop for r in rects
+      (loop for r in (pack-state-free-rects rects)
             maximize (+ (x r) (w r)) into mx
             maximize (+ (y r) (h r)) into my
             finally (return (list mx my)))
@@ -87,7 +87,7 @@
           (y-edges ())
           (new nil))
       (loop
-        for r in rects
+        for r in (pack-state-free-rects rects)
         do (with-rect (nil x y w h) r
              (when (= x1 (+ x w))
                (push r y-edges)
@@ -117,7 +117,7 @@
                    ;; instead of expanding it from the middle like
                    ;; this...
                    (setf last (rect nil start y1 (- x start) dy))
-                   (push last (cdr rects))
+                   (push last (cdr (pack-state-free-rects rects)))
                    (push last new)
                    (setf start nil))
               finally (when (and last (< (+ (x last) (w last))
@@ -126,7 +126,7 @@
                               (nx (+ x1 dx (- (x last)))))
                           (setf (w last) (- x2 nx))
                           (setf (x last) nx))))
-        (push (rect nil 0 y1 (+ x1 dx) dy) (cdr rects)))
+        (push (rect nil 0 y1 (+ x1 dx) dy) (cdr (pack-state-free-rects rects))))
       (when (and y-edges (plusp dx))
         ;; start outside edge to simplify handling of edge
         (loop with live = (list (rect nil 0 -1 0 1))
@@ -147,7 +147,7 @@
                    ;; instead of expanding it from the middle like
                    ;; this...
                    (setf last (rect nil x1 start dx (- y start)))
-                   (push last (cdr rects))
+                   (push last (cdr (pack-state-free-rects rects)))
                    (push last new)
                    (setf start nil))
               finally (when (and last (< (+ (y last) (h last))
@@ -156,10 +156,12 @@
                               (ny (+ y1 dy (- (y last)))))
                           (setf (h last) (- y2 ny))
                           (setf (y last) ny))))
-        (push (rect nil x1 0 dx (+ y1 dy)) (cdr rects))))))
+        (push (rect nil x1 0 dx (+ y1 dy)) (cdr (pack-state-free-rects rects)))))))
 
 (defun find-free-rect (width height rects)
   (unless rects (error 'packing-failed :w width :h height))
+  (unless (pack-state-free-rects rects)
+    (error 'packing-failed :w width :h height))
   (let ((retries 0)
         (max-retries 1000))
     (tagbody
@@ -168,9 +170,9 @@
          (error "something wrong with resizing code? resized ~s~
            times without packing anything ~sx~s" retries width height))
        (loop
-         :with min-rect = (first rects)
+         :with min-rect = (first (pack-state-free-rects rects))
          :with min-delta = (delta-weight width height min-rect)
-         :for rect :in (rest rects)
+         :for rect :in (rest (pack-state-free-rects rects))
          :for current-delta = (delta-weight width height rect)
          :when (or (minusp min-delta)
                    (and (not (minusp current-delta))
@@ -193,7 +195,9 @@
                               (error "can't expand packing by ~sx~s"
                                      dx dy))
                             (grow-rects rects dx dy)
-                            (setf rects (normalize-free-space rects))
+                            (setf (pack-state-free-rects rects)
+                                  (normalize-free-space
+                                   (pack-state-free-rects rects)))
                             (incf retries)
                             (go :retry)))
                         min-rect))))))
@@ -248,7 +252,7 @@
 
 (defun resolve-free-rects (rect free-rects)
   (normalize-free-space
-   (loop :for free-rect :in free-rects
+   (loop :for free-rect :in (pack-state-free-rects free-rects)
          :append (subdivide-rect free-rect rect))))
 
 (defun place-rect (rect free-rects)
@@ -279,7 +283,7 @@
 
 (defun pack-1 (rect state)
   (destructuring-bind (placed new-free-rects)
-      (place-rect rect (pack-state-free-rects state))
+      (place-rect rect state)
     (setf (pack-state-free-rects state) new-free-rects)
     placed))
 
@@ -292,7 +296,7 @@
             (values
              (loop :with free-rects = (start-pack width height)
                    :for rect :in (sort-rects (copy-seq rects))
-                   :for placed = (place-rect rect free-rects)
+                   :for placed = (pack-1 rect free-rects)
                    :do (setf maxw (max maxw (+ (x placed) (w placed))))
                        (setf maxh (max maxh (+ (y placed) (h placed))))
                    :collect placed)
