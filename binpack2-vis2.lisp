@@ -234,13 +234,6 @@
       (:right-button
        ))))
 
-(defun finish-shape (w &key close)
-  (when (shapes w)
-    (when close
-      (setf (closed (first (shapes w))) t))
-    (setf (drawing (first (shapes w))) nil)))
-
-
 
 (defmethod mouse-wheel ((window binpack2-vis2) button state x y)
   (format t "wheel ~s ~s~%" button state)
