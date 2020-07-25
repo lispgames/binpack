@@ -233,6 +233,9 @@
     (print
      `(let* ((h (finish (b::%make-hole-from-points ,points)))
              (sh (finish (b::h-subholes h))))
+        (binpack2-vis::clear-shapes)
+        (binpack2-vis::add-shape-points ,points :close nil)
+        (print ,points)
         (is eql h (b::dll-next h))
         (is eql h (b::dll-prev h))
         (is eql 1 (b::dll-length h))
@@ -258,8 +261,11 @@
   (test-hole *hole-box* 1 2
       ((0 2) (0 0) 1 2))
   (test-hole *sh-test1* 7 5
-      ((0 1) (0 0) 5 5)
-      ((-2 4) (-2 3) 7 3)))
+      ((-2 4) (-2 3) 7 3)
+      ((0 1) (0 0) 5 5)))
+
+#++
+(test 'hole1 :report 'interactive)
 
 
 (define-test (binpack hole2)
@@ -285,14 +291,12 @@
              #'make-instance
              'b::f-edge
              (loop for (ax y1 y2 g gy) in points
-                   collect g into gaps
-                   collect gy into gap-y
+                   collect (when g (list gy g)) into gaps
                    collect (b::make-point ax (min y1 y2)) into d
                    collect (b::make-point ax (max y1 y2)) into h
                    finally (return (list :d (coerce d 'vector)
                                          :h (coerce h 'vector)
-                                         :gap (coerce gaps 'vector)
-                                         :gap-y (coerce gap-y 'vector)))))))
+                                         :gaps (coerce gaps 'vector)))))))
     (b::make-d ft l end falling)))
 
 (defparameter *subhole-fts*
@@ -317,15 +321,106 @@
      (2 1 5 3 2)
      (5 0 5))))
 
+(defun brute-force-d (l end falling ft)
+  (when (> (+ l (caar ft))
+           (caar (last ft)))
+    (return-from brute-force-d #()))
+  (unless falling
+    (return-from
+     brute-force-d
+      (let ((r (coerce
+                (loop for first = t then nil
+                      for ((ax y1 y2 g gy) . more) on ft
+                      unless first
+                        collect (b::make-point ax
+                                               (if more
+                                                   (min y1 y2)
+                                                   (max y1 y2)))
+                      when more
+                        collect (b::make-point-gap ax (max y1 y2)
+                                                   (when gy (list gy g))))
+                'vector)))
+        (format t " nf: ~s~%"
+                (map 'list #'b::pp r))
+        r)))
+  (let* ((ft (coerce ft 'vector))
+         (r (1- (length ft)))
+         (f (1- r))
+         (re (aref ft r))
+         (fe (aref ft f))
+         (lsx nil)
+         (lsn nil)
+         (fex (first fe))
+         (fey (third fe))
+         (rex (first re)))
+    (coerce
+     (append
+      (loop for i below f
+            for (x1 y1 y2 g gy) = (aref ft i)
+            for (x2) = (aref ft (1+ i))
+            for x3 = (if (>= y2 fey)
+                         (- fex l)
+                         (- rex l))
+            #+do (format t "~s,~s,~s / ~s, ~s,~s~%"
+                         x1 x2 x3 y1 y2 fey)
+            when (> x1 (- rex l))
+              ;; no more spans fit
+              do (loop-finish)
+
+            when (and (= (+ x1 l) rex)
+                      (<= y2 fey))
+              ;; exact fit under falling edge (not sure this is needed?)
+              append (list (b::make-point-gap x1 (min y2 fey)
+                                              (when gy (list gy g)))
+                           (b::make-point rex (min y2 fey)))
+              and do
+            #++(format t"lsx -> nil 1~%")
+               (setf lsx nil)
+               (loop-finish)
+            when (and (<= x1 x3)
+                      (< x3  x2)
+                      (= y2 fey))
+              ;; spans gap before falling edge
+              collect (b::make-point-gap x1 y2 (when gy (list gy g)))
+              and collect (b::make-point rex y2)
+              and do (setf lsx nil)
+            #++(format t "lsx -> nil 2~%")
+               (loop-finish)
+            when (and (>= x3 x1)
+                      (<= x1 end))
+              #++(or (< (+ x1 l) fex)
+                     (and (< y2 fey)
+                          (< (+ x1 l) rex)))
+            collect (b::make-point-gap x1 y2 (when gy (list gy g)))
+            and collect (b::make-point (min x3 x2 end) y2)
+            when (and (< y1 fey) (>= y2 fey))
+              do (assert (not lsx))
+                 (setf lsx x1)
+            #++(format t "lsx -> ~s~%" lsx)
+               (setf lsn (aref ft i)))
+      (cond
+        ((and lsx (< lsx (- fex l)))
+         #++ (format t "lsx = ~s, fex = ~s, l = ~s~%" lsx fex l)
+         (list (b::make-point-open (- fex l) fey)
+               (b::make-point rex fey)))
+        (lsx
+         #++ (format t "lsx = ~s, fex = ~s, l = ~s, lsn = ~s~%" lsx fex l
+                     (cdddr lsn))
+         (list (b::make-point-gap lsx fey
+                                  (when (< 3 (length lsn))
+                                    (reverse (cdddr lsn))))
+               (b::make-point rex fey)))))
+     'vector)))
+
 (defun check-d (index l spans gaps)
-  (format t "check-d ~s~%~s~%" index spans)
+  (format t "~&~%check-d ~s~%~s~%" index spans)
   (destructuring-bind (end &rest ft)
       (aref *subhole-fts* index)
     (binpack2-vis::clear-shapes)
     (binpack2-vis::with-polyline (:rgba '(1 0 1 1) :close nil)
       (loop for (x y1 y2) in ft
-            do (binpack2-vis::add-shape-point (* x 16) (* y1 16))
-               (binpack2-vis::add-shape-point (* x 16) (* y2 16))))
+            do (binpack2-vis::add-shape-point (* x 1) (* y1 1))
+               (binpack2-vis::add-shape-point (* x 1) (* y2 1))))
     (let ((falling (loop for y = nil then (max y1 y2)
                          for (x y1 y2) in ft
                          count (and y (<= (max y1 y2) y))))
@@ -333,6 +428,7 @@
       (true (<= 1 falling 2))
       #++(format t "falling = ~s~%" falling)
       (let* ((d (finish (make-d* l end (= falling 2) ft)))
+             (bd (finish (brute-force-d l end (= falling 2) ft)))
              (gaps2))
         (loop  for (a b) on (coerce d 'list) by #'cddr
                for x1 = (b::x a)
@@ -340,8 +436,20 @@
                for x2 = (b::x b)
                for y2 = (b::y b)
                do (binpack2-vis::with-polyline (:rgba '(1 1 0 1) :close nil)
-                    (binpack2-vis::add-shape-point (1+ (* x1 16)) (1+ (* y1 16)))
-                    (binpack2-vis::add-shape-point (1+ (* x2 16)) (1+ (* y2 16)))))
+                    (binpack2-vis::add-shape-point (+ (* x1 1) 0.1)
+                                                   (- (* y1 1) 0.25))
+                    (binpack2-vis::add-shape-point (- (* x2 1) 0.1)
+                                                   (- (* y2 1) 0.25))))
+        (loop  for (a b) on (coerce bd 'list) by #'cddr
+               for x1 = (b::x a)
+               for y1 = (b::y a)
+               for x2 = (b::x b)
+               for y2 = (b::y b)
+               do (binpack2-vis::with-polyline (:rgba '(0 1 1 1) :close nil)
+                    (binpack2-vis::add-shape-point (+ (* x1 1) 0.1)
+                                                   (- (* y1 1) 0.35))
+                    (binpack2-vis::add-shape-point (- (* x2 1) 0.1)
+                                                   (- (* y2 1) 0.35))))
         #++(format t "d = ~s~%" d)
         ;; 2 vertices per expected entry
         (is = (* 2 count) (length d))
@@ -362,18 +470,111 @@
                    (when b1
                      (is >= (b::x a) (b::x b1)))
                    (when (and (b::point-gap-p a)
-                              (b::gap a))
+                              (b::gaps a))
                      (push i gaps2)))
         (is equalp (sort gaps '<) (sort gaps2 '<))))))
 
+(defun check-d2 (ft end l)
+  #++(format t "~&~%check-d2 ~s, ~s : ~s~%"end l ft)
+  (binpack2-vis::clear-shapes)
+  (binpack2-vis::with-polyline (:rgba '(1 0 1 1) :close nil)
+    (loop for (x y1 y2) in ft
+          do (binpack2-vis::add-shape-point (* x 1) (* y1 1))
+             (binpack2-vis::add-shape-point (* x 1) (* y2 1))))
+  (let ((falling (loop for y = nil then (max y1 y2)
+                       for (x y1 y2) in ft
+                       count (and y (<= (max y1 y2) y)))))
+    (true (<= 1 falling 2))
+    #++(format t "falling = ~s~%" falling)
+    (let* ((d (finish (make-d* l end (= falling 2) ft)))
+           (bd (finish (brute-force-d l end (= falling 2) ft))))
+      (loop  for (a b) on (coerce d 'list) by #'cddr
+             for x1 = (b::x a)
+             for y1 = (b::y a)
+             for x2 = (b::x b)
+             for y2 = (b::y b)
+             do (binpack2-vis::with-polyline (:rgba '(1 0 0 1) :close nil)
+                  (binpack2-vis::add-shape-point (+ (* x1 1) 0.1)
+                                                 (- (* y1 1) 0.25))
+                  (binpack2-vis::add-shape-point (- (* x2 1) 0.1)
+                                                 (- (* y2 1) 0.25))))
+      (loop  for (a b) on (coerce bd 'list) by #'cddr
+             for x1 = (b::x a)
+             for y1 = (b::y a)
+             for x2 = (b::x b)
+             for y2 = (b::y b)
+             do (binpack2-vis::with-polyline (:rgba '(0 1 1 1) :close nil)
+                  (binpack2-vis::add-shape-point (+ (* x1 1) 0.1)
+                                                 (- (* y1 1) 0.35))
+                  (binpack2-vis::add-shape-point (- (* x2 1) 0.1)
+                                                 (- (* y2 1) 0.35))))
+      #++(format t "d = ~s~%" d)
+      ;; same # of vertices from both
+      (is = (length bd) (length d))
+      ;; 2 vertices per entry
+      (is = 0 (mod (length d) 2))
+      ;; both with same y value, and with 2nd right of first
+      (loop for b1 = nil then b
+            for (a b) on (coerce d 'list) by #'cddr
+            for i from 0
+            for (a2 b2) on (coerce bd 'list) by #'cddr
+            do (true b)
+            when b
+              do (true (= (b::y a) (b::y b)))
+                 (true (= (b::y a2) (b::y b2)))
+                 (true (= (b::y a2) (b::y a)))
+                 (true (= (b::x a2) (b::x a)))
+                 (true (= (b::x b2) (b::x b)))
+                 ;; segment can have 0 length
+                 (true (<= (b::x a) (b::x b)))
+                 ;; and right of previous segment if any
+                 (when b1
+                   (is >= (b::x a) (b::x b1)))
+                 (true (equalp (and (b::point-gap-p a) (b::gaps a))
+                               (and (b::point-gap-p a2) (b::gaps a2))))))))
+
+(defun test-d ()
+  (flet ((gaps (n y1 y2)
+           (loop for i below n
+                 for y = (+ y1 (random (- y2 y1)))
+                 collect (random (- y2 y))
+                 collect y)))
+    (let* ((fe-step 2)
+           (step-step (* fe-step 2)))
+      (loop
+        for gaps below 2
+        do (loop
+             for steps below 4
+             for sh = (* steps step-step)
+             for sw = (* (1- steps) step-step)
+             do (loop
+                  for gw from 1 below (* step-step 2) by fe-step
+                  do (loop
+                       for gh from fe-step below sh by fe-step
+                       for r = nil
+                       do (loop
+                            for y below sh by step-step
+                            for y2 = (+ y step-step)
+                            for gap = (gaps gaps y y2)
+                            for x from 0 by step-step
+                            do (push (list* x y y2 gap)
+                                     r))
+                          ;; falling edge
+                          (push (list (+ sw gw) sh (- sh gh)) r)
+                          ;; rightmost edge
+                          (let ((rx (+ sw gw gw)))
+                            (push (list rx (- sh gh) 0) r)
+                            (loop for i from 1 below (1+ rx)
+                                  do (check-d2 (reverse r) rx i)
+                                  #++(sleep 0.15))))))))))
 #++
-(test 'make-d :report 'interactive)
+(time (test 'make-d :report 'interactive))
 
 (define-test (binpack make-d)
   ;; test1 top
   (check-d 0 2 '((-2 4 3) (1 5 1) (2 4 3)) nil)
   ;; test1 bottom
-  (check-d 1 2 '((0 1 2) (2 5 0) (2 4 3)) '(1))
+  (check-d 1 2 '((0 1 2) (2 5 0) (2 4 3)) '(1 2))
   ;; test1b top (no falling edge)
   (check-d 2 2 '((-2 4 3) (1 5 4)) nil)
   ;; test1b bottom
@@ -384,47 +585,52 @@
   (check-d 2 3 '((-2 4 3) (1 5 4)) nil)
   (check-d 3 3 '((0 1 2) (2 5 3)) '(1))
 
-  ;; first gap is too wide, but will be rejected by lower edge
-  (check-d 0 4 '((-2 4 3) (1 4 4)) nil)
-  ;; spans overlap, but extra will be ignored by other steps?
+  (check-d 0 4 '((-2 4 7)) nil)
   (check-d 1 4 '((0 1 1)) '())
-  ;; non-falling edge has extra invalid placements at end
   (check-d 2 4 '((-2 4 3) (1 5 4)) nil)
   (check-d 3 4 '((0 1 2) (2 5 3)) '(1))
 
-  (check-d 0 5 '((-2 4 2)) nil)
-  (check-d 1 5 '((0 1 0)) '())
+  (check-d 0 5 '((-2 4 7)) nil)
+  (check-d 1 5 '((0 1 5)) '())
   (check-d 2 5 '((-2 4 3) (1 5 4)) nil)
   (check-d 3 5 '((0 1 2) (2 5 3)) '(1))
 
-  (check-d 0 6 '((-2 4 1)) nil)
+  (check-d 0 6 '((-2 4 7)) nil)
   (check-d 1 6 '() '())
   (check-d 2 6 '((-2 4 3) (1 5 4)) nil)
-  (check-d 3 6 '((0 1 2) (2 5 3)) '(1))
+  (check-d 3 6 '() '())
 
-  (check-d 0 7 '((-2 4 0)) nil)
+  (check-d 0 7 '((-2 4 7)) nil)
   (check-d 1 7 '() '())
   (check-d 2 7 '((-2 4 3) (1 5 4)) nil)
-  (check-d 3 7 '((0 1 2) (2 5 3)) '(1))
+  (check-d 3 7 '() '())
 
   (check-d 0 8 '() nil)
   (check-d 1 8 '() '())
-  (check-d 2 8 '((-2 4 3) (1 5 4)) nil)
-  (check-d 3 8 '((0 1 2) (2 5 3)) '(1))
-  ;; todo: more test cases
-  )
+  (check-d 2 8 '() nil)
+  (check-d 3 8 '() '())
+
+  ;; automated test cases
+  (test-d)
+  (check-d2 '((1 3 7)
+              (5 7 9)
+              (10 9 6))
+            7 5))
 
 (defun make-c* (l end points)
   (let ((fb (apply
              #'make-instance
              'b::f-edge
-             (loop for (ax y1 y2 g) in points
-                   collect g into gaps
-                   collect (b::make-point ax (min y1 y2)) into d
+             (loop for (ax y1 y2) in points
+                   collect nil into gaps
+                   collect (if (< y1 y2)
+                               (b::make-point-bottom-left ax (min y1 y2))
+                               (b::make-point ax (min y1 y2)))
+                     into d
                    collect (b::make-point ax (max y1 y2)) into h
                    finally (return (list :d (coerce d 'vector)
                                          :h (coerce h 'vector)
-                                         :gap (coerce gaps 'vector)))))))
+                                         :gaps (coerce gaps 'vector)))))))
     (b::make-c fb l end)))
 
 
@@ -434,7 +640,7 @@
     (2
      (-2 3 4)
      (-1 2 3)
-     (5 2 4))
+     (5 4 2))
     ;; bottom of sh-test1
     (5
      (0 0 1)
@@ -443,25 +649,25 @@
     (3
      (-11 -2 -1)
      (-9 -3 -2)
-     (-6 -3 2)
+     (-6 2 -3)
      (-2 -4 2)
-     (6 -4 3)
-     (13 3 5))
+     (6 3 -4)
+     (13 5 3))
     (13
      (-7 -7 -6)
      (2 -8 -7)
-     (6 -8 3)
+     (6 3 -8)
      (7 -8 3)
-     (13 -8 5))
+     (13 5 -8))
     (1
      (-8 6 7)
-     (9 6 8))
+     (9 8 6))
     (-8
      (-13 2 3)
      (-12 1 2)
-     (-6 1 2)
-     (6 2 3)
-     (13 3 4))))
+     (-6 2 1)
+     (6 3 2)
+     (13 4 3))))
 
 (defun check-c (index l spans)
   (format t "~&*~%*~%check-c ~s = ~s~%" index spans)
@@ -471,8 +677,11 @@
     (binpack2-vis::clear-shapes)
     (binpack2-vis::with-polyline (:rgba '(1 0 1 1) :close nil)
       (loop for (x y2 y1) in ft
-            do (binpack2-vis::add-shape-point (* x 16) (* y1 16))
-               (binpack2-vis::add-shape-point (* x 16) (* y2 16))))
+            do (binpack2-vis::add-shape-point (* x 1) (* y1 1))
+               (binpack2-vis::add-shape-point (* x 1) (* y2 1))))
+    (binpack2-vis::with-polyline (:rgba '(1 0 0 1) :close nil)
+      (binpack2-vis::add-shape-point (* end 1) 0)
+      (binpack2-vis::add-shape-point (* end 1) 16))
     (let ((count (length spans)))
       (let* ((c (finish (make-c* l end ft))))
         (format t "c = ~s~%" c)
@@ -482,8 +691,10 @@
                for x2 = (b::x b)
                for y2 = (b::y b)
                do (binpack2-vis::with-polyline (:rgba '(1 1 0 1) :close nil)
-                    (binpack2-vis::add-shape-point (1+ (* x1 16)) (1+ (* y1 16)))
-                    (binpack2-vis::add-shape-point (1+ (* x2 16)) (1+ (* y2 16)))))
+                    (binpack2-vis::add-shape-point (+ (* x1 1) 0.25)
+                                                   (+ (* y1 1) 0.25))
+                    (binpack2-vis::add-shape-point (- (* x2 1) 0.25)
+                                                   (+ (* y2 1) 0.25))))
         ;; 2 vertices per expected entry
         (is = (* 2 count) (length c))
         ;; both with same y value, and with 2nd right of first
@@ -502,16 +713,258 @@
                    ;; and right of previous segment if any
                    (when b1
                      (is >= (b::x a) (b::x b1)))
-                   (false (and (b::point-gap-p a) (b::gap a))))))))
+                   (false (and (b::point-gap-p a) (b::gaps a))))))))
+
+
+(defun brute-force-c (w end points)
+  (let* ((points (coerce points 'vector))
+         (lp (length points))
+         (r nil)
+         (x1 (car (aref points 0)))
+         (x2 (car (aref points (1- lp))))
+         (last-y nil)
+         (p1 (make-array (- x2 x1 w -2) :initial-element nil))
+         (b (make-array (- x2 x1) :initial-element nil)))
+    (loop
+      ;; at every position between start and end of the points
+      for lx from x1 upto (- x2 w)
+      for rx = (+ lx w)
+      for i from 0
+      ;; drop a box of width W and see where it lands
+      for y = (loop for j below (1- lp)
+                    for (x1 y12 y11) = (aref points j)
+                    for (x2 y22 y21) = (aref points (1+ j))
+                    for y1 = y12
+                    when (or (and (<= x1 lx) (< lx x2))
+                             ;;(<= x1 rx x2)
+                             (and (< x1 rx) (<= rx x2))
+                                        ;(<= lx x1 rx)
+                             (and (<= lx x1) (< x1 rx))
+                             (and (< lx x2) (<= x2 rx)))
+                      maximize y1
+                    while (<= x1 rx))
+      do (setf (aref p1 i) (list lx y)))
+    #++(format t "~s~%"  p1)
+    ;; build a vector of where bottom-left edges are
+    (loop for i below lp
+          for (x y2 y1) = (aref points i)
+          when (< y2 y1)
+            do (setf (aref b (- x x1)) (list y2 y1)))
+    ;; assemble list of placements
+    (loop for last-x = nil then x
+          for (x y) across p1
+          for (by1 by2) across b
+          while x
+          when (>= x end)
+            do (if (and (= x end)
+                        (> y last-y))
+                   (progn
+                                        ;(break "fhj")
+                     #++(format t "~s ~s ~s~%" x1 last-x (- end w))
+                     (push (b::make-point-open last-x
+                                               last-y)
+                           r)
+                     (push (b::make-point-open (min (max x1 last-x)
+                                                    end)
+                                               y)
+                           r)
+                     (setf last-x end
+                           last-y y))
+                   (progn #++ (format t "@@ ~s ~s ~s~%" x1 last-x end)
+                          #++(when (equalp (list x1 last-x end)
+                                           '(0 2 3))
+                               (format t "  ~s~%" (map 'list 'b::pp r)))
+                          (setf last-x end)))
+               (loop-finish)
+          finally
+             (when (and last-x last-y)
+               (push (b::make-point-open (min end last-x) last-y) r))
+          when (and last-y
+                    (/= y last-y))
+            ;; end previous span
+            do (push (b::make-point (if (< y last-y) x (1- x))
+                                    last-y)
+                     r)
+          unless (eql last-y y)
+            ;; start a new span
+            do (if (and by1 (<= by1 y) (< y by2))
+                   (push (b::make-point-bottom-left x y) r)
+                   (push (b::make-point-open (max last-x (- x w)) y) r))
+               (setf last-y y))
+    (assert (evenp (length r)))
+    #++
+    (when r (assert (/= (b::x (first r))
+                        (b::x (second r)))))
+    (nreverse r)))
+
+(defun gen-c (heights &key (spacing 1))
+  (unless (vectorp heights)
+    (setf heights (coerce heights 'vector)))
+  (let ((m (reduce 'max heights)))
+    (loop with l = (length heights)
+          for i from -1 below l
+          for x from 0 by spacing
+          for y1 = (if (<= 0 i (1- l))
+                       (aref heights i)
+                       (1+ m))
+          for y2 = (if (<= 0 (1+ i) (1- l))
+                       (aref heights (1+ i))
+                       (1+ m))
+          unless (= y1 y2) collect (list x y2 y1))))
+
+(defun map-heights (fun edge-count height-count)
+  (loop for i below (expt height-count edge-count)
+        for z = 0
+        for n1 = nil
+        for h = (loop with n = i
+                      for j below edge-count
+                      for x = (mod n height-count)
+                      do (setf n1 (or n1 (plusp x)))
+                         (when (and (zerop x) (not n1))
+                           (incf z))
+                      collect x
+                      do (setf n (floor n height-count)))
+        do (when (= 5 z)
+             (format t "~s: ~s~%" i h))
+           (funcall fun h)))
+
+(defun check-c2a (test &key (end1 1) (vis nil))
+  (let ((ft (gen-c test))
+        (edge-count (length test)))
+    #++(format t "fb = ~s~%" ft)
+    (loop
+      for end from (min edge-count (max 1 end1)) below (1+ edge-count)
+      do (loop
+           for l from 1 below edge-count
+           do (when vis
+                (binpack2-vis::clear-shapes)
+                (binpack2-vis::with-polyline (:rgba '(0 1 0 1)
+                                              :close nil)
+                  (binpack2-vis::add-shape-point 0 -0.2)
+                  (binpack2-vis::add-shape-point l -0.2)
+                  )
+                (binpack2-vis::with-polyline (:rgba '(1 0 1 1)
+                                              :close nil)
+                  (loop
+                    for (x y2 y1) in ft
+                    do (binpack2-vis::add-shape-point (* x 1) (* y1 1))
+                       (binpack2-vis::add-shape-point (* x 1) (* y2 1))))
+                (binpack2-vis::with-polyline (:rgba '(1 0 0 1)
+                                              :close nil)
+                  (binpack2-vis::add-shape-point (* end 1) 0)
+                  (binpack2-vis::add-shape-point (* end 1) 16)))
+              (let* ((c (make-c* l end ft))
+                     (c2 (brute-force-c l end ft)))
+                #++(format t "c = ~s~%" c)
+                #++(break "~s" (map 'list 'b::pp c))
+                (when vis
+                  (loop
+                    for (a b) on (coerce c 'list) by #'cddr
+                    for x1 = (b::x a)
+                    for y1 = (b::y a)
+                    for x2 = (b::x b)
+                    for y2 = (b::y b)
+                    do (binpack2-vis::with-polyline (:rgba '(1 1 0 1) :close nil)
+                         (binpack2-vis::add-shape-point
+                          (+ (* x1 1) 0.25)
+                          (+ (* y1 1) 0.25))
+                         (binpack2-vis::add-shape-point
+                          (- (* x2 1) 0.25)
+                          (+ (* y2 1) 0.25))))
+
+                  (loop
+                    for (a b) on (coerce c2 'list) by #'cddr
+                    for x1 = (b::x a)
+                    for y1 = (b::y a)
+                    for x2 = (b::x b)
+                    for y2 = (b::y b)
+                    do (binpack2-vis::with-polyline (:rgba '(0 1 1 1) :close nil)
+                         (binpack2-vis::add-shape-point
+                          (+ (* x1 1) 0.25)
+                          (+ (* y1 1) 0.4))
+                         (binpack2-vis::add-shape-point
+                          (- (* x2 1) 0.25)
+                          (+ (* y2 1) 0.4)))))
+                #++(break "~s~%~s"
+                          (map 'list 'b::pp c)
+                          (map 'list 'b::pp c2)
+                          )
+                ;; same # of placements from both algorithms
+                (assert (= (length c) (length c2)))
+                ;; 2 points per placement
+                (assert (evenp (length c)))
+                (loop for b1 = nil then b
+                      for (a b) on (coerce c 'list) by #'cddr
+                      for (a2 b2) on (coerce c2 'list) by #'cddr
+                      for i from 0
+                      do (assert b)
+                      when b
+                        do ;; both with same y value, and with 2nd right of first
+                           (assert (= (b::y a) (b::y b)))
+                           ;; segment can have 0 length
+                           (assert (<= (b::x a) (b::x b)))
+                           ;; and same points from both algorithhm
+                           (assert (= (b::x a) (b::x a2)))
+                           (assert (= (b::y a) (b::y a2)))
+                           (assert (= (b::x b) (b::x b2)))
+                           (assert (= (b::y b) (b::y b2)))
+                           (assert
+                            (eql (typep a 'b::point-bottom-left)
+                                 (typep a2 'b::point-bottom-left)))
+                           ;; and right of previous segment if any
+                           (when b1
+                             (assert ( >= (b::x a) (b::x b1))))
+                           (assert (not (b::point-gap-p a)))
+                           (assert (not (b::point-gap-p b))))))))
+
+  )
+(defun check-c2 (edge-count height-count &key (end1 1))
+  #++(format t "~&*~%*~%check-c2 ~s , ~s~%" edge-count height-count)
+
+  (map-heights (lambda (a) (check-c2a a :end1 end1) )
+               edge-count height-count)
+  )
+(defvar *exit* t)
+(defun check-c2r (edge-count height-count &key (end1 1))
+  (setf *exit* nil)
+  (loop for i from 0
+        for a = (loop repeat edge-count collect (random height-count))
+        until *exit*
+        do (check-c2a a :end1 end1)
+        when (zerop (mod i 1000))
+          do (format t "~s~%" i)
+        )
+
+  (map-heights (lambda (a) (check-c2a a :end1 end1) )
+               edge-count height-count)
+  )
+#++
+(time (check-c2 16 3 :end1 99))
+;;  3942.431 seconds of real time
+#++
+(time (check-c2 16 4 :end1 99))
+;; 348.496 seconds of real time
+#++(time (check-c2 20 5 :end1 1))
+#++(time (check-c2r 20 6))
+
+
+
+;(check-c2a '(13 13 13 12 12 7 7 4 7 6 7 4 4 7 7 7 2 2 2 0 0) :end1 20)
+(check-c2a '(13 13 13 12 12 7 7 4 7 6 7 4 4 7 4 4 0 0) :end1 21)
+(check-c2a '(3 2 0 1 0 1 0 1 0 0 1 0 0 0 0) :end1 199)
+(0 3 2 0 1 0 1 0 1 0 0 1 0 0 0 0 0 0 0 0)
+(0 3 2 0 1 0 1 0 1 0 0 1 0 0 0 0)
+#++
+(test 'make-c :report 'interactive)
 
 (define-test (binpack make-c)
   ;; currently C extends past left side of hole
   ;; test1 top
-  (check-c 0 1 '((-2 3 1) (-1 2 5)))
+  (check-c 0 1 '((-2 3 1) (-1 2 3)))
   ;; test1 bottom
   (check-c 1 1 '((0 0 4)))
 
-  (check-c 0 2 '((-2 3 1) (-1 2 4)))
+  (check-c 0 2 '((-2 3 1) (-1 2 3)))
   (check-c 1 2 '((0 0 3)))
 
   (check-c 0 3 '((-2 3 1) (-1 2 3)))
@@ -534,70 +987,70 @@
 
   ;; fig6b
 
-  (check-c 2 1 '((-11 -2 2) (-9 -3 2) (-7 2 5) (-2 -4 7)))
+  (check-c 2 1 '((-11 -2 2) (-9 -3 2) (-7 2 5) (-2 -4 5)))
   (check-c 3 1 '((-7 -7 9) (2 -8 3) (5 3 2) (7 -8 5)))
-  (check-c 4 1 '((-8 6 16)))
-  (check-c 5 1 '((-13 2 1) (-12 1 5)))
+  (check-c 4 1 '((-8 6 9)))
+  (check-c 5 1 '((-13 2 1) (-12 1 4)))
 
-  (check-c 2 2 '((-11 -2 2) (-9 -3 1) (-8 2 6) (-2 -4 6)))
+  (check-c 2 2 '((-11 -2 2) (-9 -3 1) (-8 2 6) (-2 -4 5)))
   (check-c 3 2 '((-7 -7 9) (2 -8 2) (4 3 3) (7 -8 4)))
-  (check-c 4 2 '((-8 6 15)))
+  (check-c 4 2 '((-8 6 9)))
   (check-c 5 2 '((-13 2 1) (-12 1 4)))
 
   (check-c 2 3 '((-11 -2 2) (-9 -3 0) (-9 2 7) (-2 -4 5)))
   (check-c 3 3 '((-7 -7 9) (2 -8 1) (3 3 4) (7 -8 3)))
-  (check-c 4 3 '((-8 6 14)))
-  (check-c 5 3 '((-13 2 1) (-12 1 3) (-9 2 12)))
+  (check-c 4 3 '((-8 6 9)))
+  (check-c 5 3 '((-13 2 1) (-12 1 3) (-9 2 1)))
 
-  (check-c 2 4 '((-11 -2 1) (-10 2 8) (-2 -4 4) (2 3 7)))
+  (check-c 2 4 '((-11 -2 1) (-10 2 8) (-2 -4 4) (2 3 1)))
   (check-c 3 4 '((-7 -7 9) (2 -8 0) (2 3 5) (7 -8 2)))
-  (check-c 4 4 '((-8 6 13)))
-  (check-c 5 4 '((-13 2 1) (-12 1 2) (-10 2 12)))
+  (check-c 4 4 '((-8 6 9)))
+  (check-c 5 4 '((-13 2 1) (-12 1 2) (-10 2 2)))
 
-  (check-c 2 5 '((-11 -2 0) (-11 2 9) (-2 -4 3) (1 3 7)))
+  (check-c 2 5 '((-11 -2 0) (-11 2 9) (-2 -4 3) (1 3 2)))
   (check-c 3 5 '((-7 -7 8) (1 3 6) (7 -8 1)))
-  (check-c 4 5 '((-8 6 12)))
-  (check-c 5 5 '((-13 2 1) (-12 1 1) (-11 2 12)))
+  (check-c 4 5 '((-8 6 9)))
+  (check-c 5 5 '((-13 2 1) (-12 1 1) (-11 2 3)))
 
-  (check-c 2 6 '((-11 2 9) (-2 -4 2) (0 3 7)))
+  (check-c 2 6 '((-11 2 9) (-2 -4 2) (0 3 3)))
   (check-c 3 6 '((-7 -7 7) (0 3 7) (7 -8 0)))
-  (check-c 4 6 '((-8 6 11)))
-  (check-c 5 6 '((-13 2 1) (-12 1 0) (-12 2 12)))
+  (check-c 4 6 '((-8 6 9)))
+  (check-c 5 6 '((-13 2 1) (-12 1 0) (-12 2 4)))
 
-  (check-c 2 7 '((-11 2 9) (-2 -4 1) (-1 3 7)))
+  (check-c 2 7 '((-11 2 9) (-2 -4 1) (-1 3 4)))
   (check-c 3 7 '((-7 -7 6) (-1 3 7)))
-  (check-c 4 7 '((-8 6 10)))
-  (check-c 5 7 '((-13 2 7)))
+  (check-c 4 7 '((-8 6 9)))
+  (check-c 5 7 '((-13 2 5)))
 
-  (check-c 2 8 '((-11 2 9) (-2 -4 0) (-2 3 7)))
+  (check-c 2 8 '((-11 2 9) (-2 -4 0) (-2 3 5)))
   (check-c 3 8 '((-7 -7 5) (-2 3 7)))
   (check-c 4 8 '((-8 6 9)))
-  (check-c 5 8 '((-13 2 7)))
+  (check-c 5 8 '((-13 2 5)))
 
-  (check-c 2 9 '((-11 2 8) (-3 3 7)))
+  (check-c 2 9 '((-11 2 8) (-3 3 6)))
   (check-c 3 9 '((-7 -7 4) (-3 3 7)))
   (check-c 4 9 '((-8 6 8)))
-  (check-c 5 9 '((-13 2 7)))
+  (check-c 5 9 '((-13 2 5)))
 
   (check-c 2 10 '((-11 2 7) (-4 3 7)))
   (check-c 3 10 '((-7 -7 3) (-4 3 7)))
   (check-c 4 10 '((-8 6 7)))
-  (check-c 5 10 '((-13 2 7)))
+  (check-c 5 10 '((-13 2 5)))
 
   (check-c 2 11 '((-11 2 6) (-5 3 7)))
   (check-c 3 11 '((-7 -7 2) (-5 3 7)))
   (check-c 4 11 '((-8 6 6)))
-  (check-c 5 11 '((-13 2 7)))
+  (check-c 5 11 '((-13 2 5)))
 
   (check-c 2 12 '((-11 2 5) (-6 3 7)))
   (check-c 3 12 '((-7 -7 1) (-6 3 7)))
   (check-c 4 12 '((-8 6 5)))
-  (check-c 5 12 '((-13 2 7)))
+  (check-c 5 12 '((-13 2 5)))
 
   (check-c 2 13 '((-11 2 4) (-7 3 7)))
   (check-c 3 13 '((-7 -7 0) (-7 3 7)))
   (check-c 4 13 '((-8 6 4)))
-  (check-c 5 13 '((-13 2 6)))
+  (check-c 5 13 '((-13 2 5)))
 
   (check-c 2 14 '((-11 2 3) (-8 3 7)))
   (check-c 3 14 '((-7 3 6)))
@@ -607,32 +1060,32 @@
   (check-c 2 15 '((-11 2 2) (-9 3 7)))
   (check-c 3 15 '((-7 3 5)))
   (check-c 4 15 '((-8 6 2)))
-  (check-c 5 15 '((-13 2 4) (-9 3 7)))
+  (check-c 5 15 '((-13 2 4) (-9 3 1)))
 
   (check-c 2 16 '((-11 2 1) (-10 3 7)))
   (check-c 3 16 '((-7 3 4)))
   (check-c 4 16 '((-8 6 1)))
-  (check-c 5 16 '((-13 2 3) (-10 3 7)))
+  (check-c 5 16 '((-13 2 3) (-10 3 2)))
 
   (check-c 2 17 '((-11 2 0) (-11 3 7)))
   (check-c 3 17 '((-7 3 3)))
   (check-c 4 17 '((-8 6 0)))
-  (check-c 5 17 '((-13 2 2) (-11 3 7)))
+  (check-c 5 17 '((-13 2 2) (-11 3 3)))
 
   (check-c 2 18 '((-11 3 6)))
   (check-c 3 18 '((-7 3 2)))
   (check-c 4 18 'NIL)
-  (check-c 5 18 '((-13 2 1) (-12 3 7)))
+  (check-c 5 18 '((-13 2 1) (-12 3 4)))
 
   (check-c 2 19 '((-11 3 5)))
   (check-c 3 19 '((-7 3 1)))
   (check-c 4 19 'NIL)
-  (check-c 5 19 '((-13 2 0) (-13 3 7)))
+  (check-c 5 19 '((-13 2 0) (-13 3 5)))
 
   (check-c 2 20 '((-11 3 4)))
   (check-c 3 20 '((-7 3 0)))
   (check-c 4 20 'NIL)
-  (check-c 5 20 '((-13 3 6)))
+  (check-c 5 20 '((-13 3 5)))
 
   (check-c 2 21 '((-11 3 3)))
   (check-c 3 21 'NIL)
@@ -859,6 +1312,7 @@
     (false (b::point-on-rect 4 6 a))
     (false (b::point-on-rect 4 8 a))
     (false (b::point-on-rect 2 6 a))
+    #++
     (flet ((hv (x y)
              (make-instance 'b::hole-vertex :x x :y y)))
       (true (b::hv-span-overlaps-rect (hv 1 0) (hv 1 5) a))
@@ -933,10 +1387,10 @@
       (true (b::hv-span-overlaps-rect (hv 0 8) (hv 10 8) a))
 
 
-)
+      )
 
-)
-)
+    )
+  )
 
 #++
 (time
@@ -944,9 +1398,12 @@
 
 
 
+#++
+(time (test 'binpack :report 'quiet))
+
 
 #++
-(test 'dll :report 'interactive)
+(test 'make-d :report 'interactive)
 
 #++
 (untrace)
@@ -976,4 +1433,3 @@
 (init-hole 256 256)
 
 #++(ql:quickload '(binpack parachute))
-

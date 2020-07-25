@@ -15,7 +15,7 @@
      (2 :vec4) ;; uv
      (3 :vec4) ;; color
      )))
-
+(defvar *validate* nil)
 (declaim (inline vertex vertex-v color normal uv))
 (defun vertex (x &optional (y 0.0) (z 0.0))
   (glim:attrib-f 0 x y z))
@@ -37,10 +37,16 @@
 (defparameter *mouse* t)
 
 (Defparameter *undo* nil)
+(defun regression-file ()
+  (format nil "/tmp/binpack/regression.~a.lisp" (get-universal-time)))
+
+
+(defvar *replays* nil)
 
 
 (defclass binpack2-vis (scratchpad)
   ((scale :initform 1 :accessor scale)
+   (draw-scale :initform 16 :accessor draw-scale)
    (spacing :initform 16 :accessor spacing)
    (origin :initform :center :accessor origin)
    (shapes :initform nil :accessor shapes)
@@ -60,6 +66,13 @@
    (edit-point-prev :initform nil :accessor edit-point-prev)
    (placing :initform nil :accessor placing)
    (places :initform nil :accessor places)
+   (placesxy :initform (list 0 0) :accessor placesxy)
+   (placed :initform nil :accessor placed)
+   (saved :initform nil :accessor saved)
+   (replay :initform nil :accessor replay)
+   (replay-save :initform nil :accessor replay-save)
+   (replay-delay :initform 0.1 :accessor replay-delay)
+   (replay-time :initform 0 :accessor replay-time)
    (pwx :initform 1 :accessor pwx)
    (pwy :initform 1 :accessor pwy)
    (hole :initform nil :accessor hole)
@@ -70,11 +83,80 @@
                                 (:solid :vertex vertex/simple
                                         :fragment frag/solid))))
 
+(defvar *w* nil)
+
+(defun reset (w &key replay)
+  (if replay
+      (if (eql replay :saved)
+          (setf (Replay w) (or (replay-save w)
+                               (reverse (placed w))))
+          (setf (replay w)
+                (reverse (placed w))))
+      (setf (replay w) nil
+            (replay-save w) nil))
+  (setf (hole w) (b::init-hole 16 16))
+  (when (replay w)
+    (unless (eql (caar (replay w)) :init)
+      (push (list :init 16 16) (replay w))))
+  (setf (placed w) nil)
+  (unless (replay w)
+    (push (list :init 16 16) (placed w))
+    (setf (saved w) nil))
+  (if replay
+      (setf (placing w) nil)
+      (setf (placing w) t))
+  (setf (places w) nil))
+
+(defun replay-file (f)
+  (cond
+    ((consp f)
+     (setf (replay *w*) f))
+    (t
+     (setf (replay *w*) (with-open-file (s f) (read s)))))
+  #++(format t "replaying file ~s:~% ~s~%" f (replay *w*))
+  (unless (eql (caar (replay *w*)) :init)
+    (push (list :init 16 16) (replay *w*)))
+  (setf (replay-save *w*) (replay *w*)))
+
+(defun save-regression (w)
+  (with-open-file (f (regression-file) :direction :output
+                                       :if-does-not-exist :create)
+    (write (reverse (placed w))
+           :stream f :readably t)))
+
+
+(defmacro with-regression-restart ((w) &body body)
+  `(restart-case
+       (progn ,@body)
+     (:retry ()
+      :report (lambda (s)
+                (format s "save regression test if needed, then reset and replay it"))
+       (unless (saved ,w)
+         (save-regression w))
+       (reset ,w :replay t))
+     (:dump-and-restart ()
+      :report (lambda (s)
+                (format s "save regression test, then reset and continue"))
+       (unless (saved ,w)
+         (save-regression ,w))
+       (reset ,w))
+     (:cancel-replay ()
+      :report (lambda (s)
+                (format s "reset and stop replay"))
+       (reset ,w :replay :saved)
+       (setf (replay ,w) nil))
+     (:stop-replay ()
+      :report (lambda (s)
+                (format s "stop replay!"))
+       (setf (placing ,w) nil)
+       (setf (pwx ,w) nil
+             (pwy ,w) nil)
+       (setf (replay ,w) nil))))
 
 (defun save-undo (w)
   (push (shapes w) *undo*))
 
-(defvar *w* nil)
+
 #++
 (setf (color-picker-w *w*) 12
       (color-picker-bits *w*) 4)
@@ -170,8 +252,147 @@
                       (glim:ensure-matrix :modelview)))
   (glim:uniform 'normal-matrix (glim:ensure-matrix :modelview)))
 
+(defmacro with-polyline ((&key (rgba ''(1 0 0 1))
+                            (close t))
+                         &body body)
+  `(when *w*
+     (progn
+       (finish-shape *w*)
+       (start-polyline :rgba ,rgba)
+       ,@body
+       (finish-shape *w* :close ,close))))
+
+(defparameter *wait* nil)
+(defun do-replay (w)
+  (restart-case
+      (let ((now (/ (get-internal-real-time) internal-time-units-per-second)))
+        (when (and (> now (+ (replay-time w)
+                             #++(replay-delay w)))
+                   (not (eql *wait* 0)))
+          (when (numberp *wait*)
+            (decf *wait*))
+          (setf (replay-time w) now)
+          (let ((r (pop (replay w))))
+            (push r (placed w))
+            #++ (format t "~%replay ~s~%" r)
+            (let (#++(*standard-output* (make-broadcast-stream)))
+              (ecase (car r)
+                (:init
+                 (setf (placed w) nil)
+                 (setf (placing w) nil)
+                 (setf (places w) nil)
+                 (setf (pwx w) nil
+                       (pwy w) nil)
+                 (setf (hole w) (apply #'b::init-hole (cdr r))))
+                (:show
+                 (setf (pwx w) (second r)
+                       (pwy w) (third r))
+                 (setf (places w) nil)
+                 (with-polyline (:rgba `(1 0 1 1) :close t)
+                   (add-shape-point 0 0)
+                   (add-shape-point 0 (pwy w))
+                   (add-shape-point (pwx w) (pwy w))
+                   (add-shape-point (pwx w) 0))
+                 #++(format t "pw* = ~s, ~s~%" (pwx w) (pwy w))
+                 (setf (placing w) nil)
+                 (when (or (not (places w))
+                           (/= (pwx w) (first (placesxy w)))
+                           (/= (pwy w) (second (placesxy w))))
+                   (setf (places w)
+                         (binpack::find-all-placements (hole w)
+                                                       (pwx w) (pwy w)))
+                   (setf (placesxy w) (list (pwx w) (pwy w))))
+                 (when *validate*
+                   (let ((x (loop for p in (places w)
+                                  unless (b::valid-placement-p* p)
+                                    collect p)))
+                     (when x
+                       (break "invalid placement(s) ~sx~s @ ~s?"
+                              (b::w (car x)) (b::h (car x))
+                              (mapcar 'b::pp x)))))
+                 #++(format t "places = ~s~%" (places w)))
+                (:place
+                 (setf (pwx w) nil
+                       (pwy w) nil)
+                 (destructuring-bind (x y wx wy) (cdr r)
+                   (glim:with-draw (:quads :shader :solid)
+                     (color 0 1 0 1)
+                     (let ((x1 (* x (spacing w)))
+                           (x2 (* (+ x wx) (spacing w)))
+                           (y1 (* y (spacing w)))
+                           (y2 (* (+ y wy) (spacing w))))
+                       (vertex x1 y1)
+                       (vertex x2 y1)
+                       (vertex x2 y2)
+                       (vertex x1 y2)))
+                   (dispatch-draws w)
+                   (let ((ok nil))
+                     (loop for p in (places w)
+                           #+do (format *debug-io* "~s,~s ~sx~s =? ~s,~s ~sx~s?"
+                                        x y wx wy
+                                        (b::x p) (b::y p)
+                                        (b::w p) (b::h p))
+                           when (and (= x (b::x p))
+                                     (= y (b::y p))
+                                     (= wx (b::w p))
+                                     (= wy (b::h p)))
+                             do (setf (hole w)
+                                      (b::remove-quad-from-hole (hole w) p))
+                                (setf ok t)
+                                (loop-finish))
+                     (unless ok
+                       #++(glut:swap-buffers)
+                       (let ((x1 x)
+                             (x2 (+ x wx))
+                             (y1 y)
+                             (y2 (+ y wy)))
+                         (with-polyline (:rgba `(1 1 1 1) :close t)
+                           (add-shape-point x1 y1)
+                           (add-shape-point x2 y1)
+                           (add-shape-point x2 y2)
+                           (add-shape-point x1 y2)))
+                       (break "failed to place ~sx~s @ ~s,~s?"
+                              wx wy x y)))))))
+            (when (and (not (replay w))
+                       (not (places w)))
+              (setf (placing w) t
+                    (pwx w) nil
+                    (pwy w) nil))
+            (when (and (hole w) *validate*)
+              (b::check-hole (hole w)))
+            (redraw-hole w)
+            (when (and (eql (car r) :show)
+                       (pwx w)
+                       (pwy w))
+              (with-polyline (:rgba `(1 0 1 1) :close t)
+                (add-shape-point 0 0)
+                (add-shape-point 0 (pwy w))
+                (add-shape-point (pwx w) (pwy w))
+                (add-shape-point (pwx w) 0))))))
+    (:replay ()
+     :report "replay the placements"
+      (reset w :Replay :saved))
+    (:cancel-replay ()
+     :report "cancel replay and reset"
+      (reset w :Replay :saved)
+      (setf (replay w) nil)
+      (setf (placing w) t)
+      (redraw-hole w))
+    (:stop-replay ()
+     :report "cancel replay"
+      (setf (replay w) nil)
+      (setf *replays* nil)
+      (setf (placing w) t)
+      (redraw-hole w))))
+
 (defmethod display ((w binpack2-vis) now)
   (setf *w* w)
+  (when (and *replays* (not (replay w)))
+    (when (> (length *replays*) 2)
+      (format t "~s replays left~%" (length *replays*)))
+    (replay-file (#-sbcl pop
+                  #+sbcl sb-ext:atomic-pop
+                  *replays*)))
   (glim:with-state (*format*)
     (when (editing-point w)
       (setf (x (editing-point w)) (gmx w)
@@ -237,6 +458,11 @@
         (setf (values (gmx w) (gmy w))
               (translate-mouse w (mx w) (my w)))
                                         ;(format t "x1=~s,~s, 2=~s,~s~%" x1 y1 x2 y2)
+
+        (when (replay w)
+          (do-replay w))
+
+
         (glim:with-draw (:lines :shader :solid)
           (color 0.2 0.1 0.2 1)
           (when (minusp y1)
@@ -265,51 +491,46 @@
           (vertex x2 0)
           (vertex 0 y1)
           (vertex 0 y2))
-        (restart-case
-            (when (and (placing w) (hole w))
-              (flet ((s (x) (* (spacing w)
-                               (if (minusp x) -1 1)
-                               (ceiling (abs x) (spacing w)))))
-                (let* ((mx (s (gmx w)))
-                       (my (s (gmy w)))
-                       (in 2))
-                  (glim:with-draw (:lines :shader :solid)
-                    (color 1 0.1 1.0 1)
-                    (vertex 0 0) (vertex 0 (s my))
-                    (vertex 0 (s my)) (vertex (s mx) (s my))
-                    (vertex (s mx) (s my)) (vertex (s mx) 0)
-                    (vertex (s mx) 0) (vertex 0 0))
-                  (when (and (not (zerop mx)) (not (zerop my)))
-                    (glim:with-draw (:quads :shader :solid)
-                      (color 0 1 0 0.1)
-                      (let* ((mx (abs mx))
-                             (my (abs my))
-                             (px (binpack::find-all-placements (hole w) mx my)))
-                        (setf (places w) px)
-                        (loop for p in px
-                              for x = (binpack::x p)
-                              for y = (binpack::y p)
-                              do (vertex (+ x in) (+ y in))
-                                 (vertex (+ x in) (+ y my (- in)))
-                                 (vertex (+ x mx (- in) in) (+ y my (- in)))
-                                 (vertex (+ x mx (- in) in) (+ y in)))))))))
-          (:dump-and-continue ()
-           :report (lambda (s)
-                     (format s "print hole and clear it, then continue"))
-            (b::print-hole (hole w))
-            (setf (hole w) (b::init-hole 256 256)
-                  (placing w) t
-                  (places w) nil)))
+        (with-regression-restart (w)
+          (when (and (placing w) (hole w))
+            (flet ((s (x) (* (spacing w)
+                             (if (minusp x) -1 1)
+                             (ceiling (abs x) (spacing w)))))
+              (let* ((mx (s (gmx w)))
+                     (my (s (gmy w)))
+                     (in 2))
+                (glim:with-draw (:lines :shader :solid)
+                  (color 1 0.1 1.0 1)
+                  (vertex 0 0) (vertex 0 (s my))
+                  (vertex 0 (s my)) (vertex (s mx) (s my))
+                  (vertex (s mx) (s my)) (vertex (s mx) 0)
+                  (vertex (s mx) 0) (vertex 0 0))
+                (when (and (not (zerop mx)) (not (zerop my)))
+                  (glim:with-draw (:quads :shader :solid)
+                    (color 0 1 0 0.1)
+                    (let* ((mx (/ (abs mx) 16))
+                           (my (/ (abs my) 16))
+                           (px (binpack::find-all-placements (hole w) mx my)))
+                      (setf (places w) px)
+                      (loop with mx = (* mx 16)
+                            with my = (* my 16)
+                            for p in px
+                            for x = (* 16 (binpack::x p))
+                            for y = (* 16 (binpack::y p))
+                            do (vertex (+ x in) (+ y in))
+                               (vertex (+ x in) (+ y my (- in)))
+                               (vertex (+ x mx (- in) in) (+ y my (- in)))
+                               (vertex (+ x mx (- in) in) (+ y in))))))))))
         (when (and (not (placing w)) (places w))
-          (let* ((mx (gmx w))
-                 (my (gmy w))
+          (let* ((mx (/ (gmx w) 16))
+                 (my (/ (gmy w) 16))
                  (in 2))
             (color 0 1 0 0.1)
             (loop for p in (places w)
-                  for x1 = (b::x p)
-                  for y1 = (b::y p)
-                  for x2 = (+ x1 (b::w p))
-                  for y2 = (+ y1 (b::h p))
+                  for x1 = (* 16 (b::x p))
+                  for y1 = (* 16 (b::y p))
+                  for x2 = (+ x1 (* 16 (b::w p)))
+                  for y2 = (+ y1 (* 16 (b::h p)))
 
                   when (b::point-in-rect p mx my)
                     do (glim:with-draw (:quads :shader :solid)
@@ -319,8 +540,9 @@
                          (vertex (+ x2 (- in) in) (+ y1 in))))))
 
         (dispatch-draws w)
-        (when (shapes w)
-          (loop for s in (reverse (shapes w)) do (draw-shape w s)))
+        (ignore-errors
+         (when (shapes w)
+           (loop for s in (reverse (shapes w)) do (draw-shape w s))))
         (dispatch-draws w)))
     (when (show-colors w)
       (glim:with-pushed-matrix (:modelview)
@@ -356,13 +578,16 @@
   (when (hole w)
     (clear-shapes)
     (let ((*w* w))
-      (b::do-dll/next (hole (hole w))
-        (draw-hole hole (aref *flags* 7))
-        (when (and (aref *flags* 8) (pwx w))
-          (draw-cd hole (pwx w)))
-        (when (and ;(aref *flags* 9)
-               (pwx w) (pwy w))
-          (draw-placements hole (pwx w) (pwy w)))))))
+      (with-regression-restart (w)
+        (b::do-dll/next (hole (hole w))
+          (draw-hole hole (aref *flags* 7))
+          (when (and (aref *flags* 8) (pwx w))
+            (draw-cd hole (pwx w)))
+          (when (and (pwx w) (pwy w))
+            (let ((l (list :show (pwx w) (pwy w))))
+              (unless (equalp l (car (placed w)))
+                (push l (placed w))))
+            (draw-placements hole (pwx w) (pwy w))))))))
 
 (defmethod mouse ((w binpack2-vis) button state x y)
   (format t "~s ~s~%" button state)
@@ -378,16 +603,26 @@
           (redraw-hole w)
           (setf (placing w) nil))
          (t
-          (when (places w)
-            (loop for p in (places w)
-                  when (b::point-in-rect p (gmx w) (gmy w))
-                    do (b::remove-quad-from-hole (hole w) p)
-                       (loop-finish))
-             (setf (places w) nil
-                   (pwx w) nil
-                   (pwy w) nil
-                   (placing w) t)
-             (redraw-hole w)))))
+          (when (and (hole w) (places w))
+            (with-regression-restart (w)
+              (loop for p in (places w)
+                    when (b::point-in-rect p (/ (gmx w) 16)
+                                           (/ (gmy w) 16))
+                      do (push (list :place
+                                     (b::x p) (b::y p)
+                                     (b::w p) (b::h p))
+                               (placed w))
+                         (setf (hole w)
+                               (b::remove-quad-from-hole (hole w) p))
+                         (loop-finish))
+              (when (hole w)
+                (b::do-dll/next (h (hole w))
+                  (b::check-hole h)))
+              (setf (places w) nil
+                    (pwx w) nil
+                    (pwy w) nil
+                    (placing w) t)
+              (redraw-hole w))))))
       (:right-button
        (when (shapes w)
          (setf (closed (first (shapes w)))
@@ -414,9 +649,10 @@
   (when *w*
     (finish-shape *w*)
     (push (make-instance 'polyline) (shapes *w*))
-    (loop for (x y) on points by #'cddr
-          do (vector-push-extend (make-instance 'point :x x :y y)
-                                 (points (first (shapes *w*)))))
+    (let ((s (draw-scale *w*)))
+      (loop for (x y) on points by #'cddr
+            do (vector-push-extend (make-instance 'point :x (* s x) :y (* s y))
+                                   (points (first (shapes *w*))))))
     (finish-shape *w* :close close)))
 
 (defun start-polyline (&key (rgba '(1 0 0 1)))
@@ -426,18 +662,11 @@
 
 (defun add-shape-point (x y)
   (when *w*
-    (vector-push-extend (make-instance 'point :x x :y y)
-                        (points (first (shapes *w*))))))
+    (let ((s (draw-scale *w*)))
+      (vector-push-extend (make-instance 'point :x (* s x) :y (* s y))
+                          (points (first (shapes *w*)))))))
 
-(defmacro with-polyline ((&key (rgba ''(1 0 0 1))
-                            (close t))
-                         &body body)
-  `(when *w*
-     (progn
-       (finish-shape *w*)
-       (start-polyline :rgba ,rgba)
-       ,@body
-       (finish-shape *w* :close ,close))))
+
 
 (defmethod mouse-wheel ((window binpack2-vis) button state x y)
   (format t "wheel ~s ~s~%" button state)
@@ -510,12 +739,17 @@
               (shapes window)))
     (#\p (setf (placing window) (not (placing window))))
     (#\r
-     (setf (places window) nil
-           (placing window) t)
-     (setf (hole window)
-           (b::init-hole 256 256))
-     (redraw-hole window)
-     )
+     (reset window :replay :saved))
+    (#\c
+     (when (hole window)
+       (b::check-hole (hole window))))
+    (#\s
+     (save-regression window))
+    (#\w
+     (setf *wait* 1))
+    (#\i
+     (reset window)
+     (redraw-hole window))
     (#\d
      (loop for s in (shapes window)
            do (print-shape s)))
@@ -549,8 +783,8 @@
       (add-shape-point (b::hv-x n) (b::hv-y n))))
   (when draw-subholes
     (let ((ofs 0))
+                                        ;(b::check-hole hole)
       (b::do-dll/next (n (b::h-subholes hole))
-        (b::check-subhole n)
         (incf ofs)
         #++
         (with-polyline (:rgba (rnd-rgb) :close t)
@@ -573,7 +807,8 @@
                     (list (ldb (byte 1 0) c1)
                           (ldb (byte 1 1) c1)
                           (ldb (byte 1 2) c1)
-                          1)))
+                          1))
+               (ofs (/ ofs 16)))
           (with-polyline (:rgba col :close nil)
             (loop
               for d across (b::f-d (b::sh-top n))
@@ -585,7 +820,7 @@
               for y2 = (b::y h) then (if (= y1 (b::y d))
                                          (b::y h)
                                          (b::y d))
-              for gap across (b::f-gap (b::sh-top n))
+              for gaps across (b::f-gaps (b::sh-top n))
               do (add-shape-point (+ ofs (b::x d)) (+ ofs y1))
                  (add-shape-point (+ ofs x) (+ ofs y2))))
           #++
@@ -627,7 +862,7 @@
                   when (< end x)
                     do (add-shape-point (+ ofs (b::x d)) (+ ofs y1))
                        (add-shape-point (+ ofs (b::x h)) (+ ofs y2))))
-          (incf ofs 0.5)
+          (incf ofs (/ 0.5 16))
 
           (with-polyline (:rgba col :close nil)
             (loop with end = (b::sh-end n)
@@ -656,7 +891,7 @@
                   when (< end x)
                     do (add-shape-point (+ ofs (b::x d)) (+ ofs y1))
                        (add-shape-point (+ ofs (b::x h)) (+ ofs y2))))
-          (incf ofs -0.5))))))
+          (incf ofs (/ -0.5 16)))))))
 
 (defun draw-cd (hole l1)
   (let ((ofs 0))
@@ -668,12 +903,13 @@
                         (ldb (byte 1 2) c1)
                         1)))
 
-        (let* ((l (* 16 l1))
+        (let* ((l (* l1))
                (c (b::make-c (b::sh-bottom n) l (b::sh-end n)))
-               (ofs (+ ofs 2)))
-          (format t "c = ~s~%" c)
+               (ofs (/ (+ ofs 2) 16)))
+          #++(format t "c = ~s~%"
+                     (loop for i across c collect (list (b::x i) (b::y i))))
           (loop for (p1 p2) on (coerce c 'list) by #'cddr
-                for i from 0 by 0.3
+                for i from 0 by (/ 0.3 16)
                 do (with-polyline (:rgba col ;(rnd-rgb)
                                    :close nil)
                      (add-shape-point (+ ofs (b::x p1))
@@ -683,50 +919,51 @@
                      (add-shape-point (+ ofs (b::x p2))
                                       (+ ofs (b::y p2) i))
                      (add-shape-point (+ ofs (b::x p2))
-                                      (+ ofs (b::y p2) i 3)))
+                                      (+ ofs (b::y p2) i 3/16)))
                    (typecase p1
                      (b::point-open
                       (with-polyline (:rgba col ;(rnd-rgb)
                                       :close nil)
-                        (add-shape-point (+ ofs (b::x p1) -3)
-                                         (+ ofs (b::y p1) -3))
+                        (add-shape-point (+ ofs (b::x p1) -3/16)
+                                         (+ ofs (b::y p1) -3/16))
                         (add-shape-point (+ ofs (b::x p1))
                                          (+ ofs (b::y p1)))
-                        (add-shape-point (+ ofs (b::x p1) +3)
-                                         (+ ofs (b::y p1) -3))))
+                        (add-shape-point (+ ofs (b::x p1) +3/16)
+                                         (+ ofs (b::y p1) -3/16))))
                      (b::point-bottom-left
                       (with-polyline (:rgba col ;(rnd-rgb)
                                       :close nil)
-                        (add-shape-point (+ ofs (b::x p1) -3)
-                                         (+ ofs (b::y p1) 3))
+                        (add-shape-point (+ ofs (b::x p1) -3/16)
+                                         (+ ofs (b::y p1) 3/16))
                         (add-shape-point (+ ofs (b::x p1))
                                          (+ ofs (b::y p1)))
-                        (add-shape-point (+ ofs (b::x p1) +3)
-                                         (+ ofs (b::y p1) 3)))))
+                        (add-shape-point (+ ofs (b::x p1) +3/16)
+                                         (+ ofs (b::y p1) 3/16)))))
                    (when (typep p2 'b::point-open)
                      (with-polyline (:rgba col ;(rnd-rgb)
                                      :close nil)
-                       (add-shape-point (+ ofs (b::x p2) -3)
-                                        (+ ofs (b::y p2) -3))
+                       (add-shape-point (+ ofs (b::x p2) -3/16)
+                                        (+ ofs (b::y p2) -3/16))
                        (add-shape-point (+ ofs (b::x p2))
                                         (+ ofs (b::y p2)))
-                       (add-shape-point (+ ofs (b::x p2) +3)
-                                        (+ ofs (b::y p2) -3)))))
+                       (add-shape-point (+ ofs (b::x p2) +3/16)
+                                        (+ ofs (b::y p2) -3/16)))))
           (let* ((d (b::make-d (b::sh-top n) l (b::sh-end n)
                                (b::sh-falling-corner-p n)))
-                 (ofs (max 1 (+ ofs 1))))
-            (format t "d = ~s~%" d)
+                 (ofs (max 1/16 (+ ofs 1/16))))
+            #++(format t "d = ~s~%"
+                       (loop for i across d collect (list (b::x i) (b::y i))))
             (loop for (p1 p2) on (coerce d 'list) by #'cddr
-                  for i from 0 by 0.3
+                  for i from 0 by (/ 0.3 16)
                   do (with-polyline (:rgba col ;(rnd-rgb)
                                      :close nil)
-                       (when (and (typep p2 'b::point-gap)
-                                  (b::gap p2))
-                         (add-shape-point (+ ofs (b::x p1))
-                                          (+ (- ofs)
-                                             (b::y p2)
-                                             (- (b::gap p2))
-                                             i)))
+                       #++(when (and (typep p2 'b::point-gap)
+                                     (b::gaps p2))
+                            (add-shape-point (+ ofs (b::x p1))
+                                             (+ (- ofs)
+                                                (b::y p2)
+                                                (- (b::gap p2))
+                                                i)))
                        (add-shape-point (+ ofs (b::x p1))
                                         (+ (- ofs) (b::y p1) i))
                        #++(add-shape-point (+ ofs (b::x p1) l)
@@ -735,22 +972,20 @@
                          (add-shape-point (+ ofs (b::x p2))
                                           (+ (- ofs) (b::y p2) i))
                          (add-shape-point (+ ofs (b::x p2))
-                                          (+ (- ofs) (b::y p2) i -4))))
+                                          (+ (- ofs) (b::y p2) i -4/16))))
                      (when (b::point-open-p p1)
                        (with-polyline (:rgba col ;(rnd-rgb)
                                        :close nil)
-                         (add-shape-point (+ ofs (b::x p1) -2)
-                                          (+ (- ofs) (b::y p1) -2))
+                         (add-shape-point (+ ofs (b::x p1) -2/16)
+                                          (+ (- ofs) (b::y p1) -2/16))
                          (add-shape-point (+ ofs (b::x p1))
                                           (+ (- ofs) (b::y p1)))
                          (add-shape-point (+ ofs (b::x p1) +2)
-                                          (+ (- ofs) (b::y p1) -2)))))))))))
+                                          (+ (- ofs) (b::y p1) -2/16)))))))))))
 
 (defun draw-placements (hole w h)
   (let* ((ofs 1)
-         (w (* w 16))
-         (h (* h 16))
-         (in 2)
+         (in 2/16)
          (c1 (1+ (floor ofs)))
          (col (list (ldb (byte 1 0) c1)
                     (ldb (byte 1 1) c1)
@@ -762,18 +997,17 @@
             for y = (b::y p)
             for w = (b::w p)
             for h = (b::h p)
-            ;for in from in by 1
+                                        ;for in from in by 1
             for z from 0
             for -in = (- in)
             for +in = in
-            for o = (b::intersect-hole-with-quad (b::hole p) p)
+            for o = (b::intersect-hole-with-quad p)
             ;;for col = '(0 1 0 1)
             do (with-polyline (:rgba col :close t)
                  (add-shape-point (+ x   +in) (+ y   +in))
                  (add-shape-point (+ x w -in) (+ y   +in))
                  (add-shape-point (+ x w -in) (+ y h -in))
-                 (add-shape-point (+ x   +in) (+ y h -in))
-                 )
+                 (add-shape-point (+ x   +in) (+ y h -in)))
                (unless o
                  (break "no intersection hole ~s, p ~s?"
                         hole p))
@@ -789,46 +1023,39 @@
                              (d2 (alexandria:clamp (b::end i) 0 1)))
                          (cond
                            ((or (= d1 d2 0))
-                            (add-shape-point (+ x1 +in 3)
-                                             (+ y1 +in 3))
-                            (add-shape-point (+ x1 +in -3)
-                                             (+ y1 +in -3)))
+                            (add-shape-point (+ x1 +in 3/16)
+                                             (+ y1 +in 3/16))
+                            (add-shape-point (+ x1 +in -3/16)
+                                             (+ y1 +in -3/16)))
                            ( (= d1 d2 1)
-                             (add-shape-point (+ x2 +in -3)
-                                              (+ y2 +in 3))
-                             (add-shape-point (+ x2 +in 3)
-                                              (+ y2 +in -3))
-                             )
-                           (t (add-shape-point (+ (alexandria:lerp d1 x1 x2) +in)
-                                               (+ (alexandria:lerp d1 y1 y2) +in))
-                              (add-shape-point (+ (alexandria:lerp d2 x1 x2) +in)
-                                               (+ (alexandria:lerp d2 y1 y2) +in)))
-                           
-                           )
-                         )
-                       ))))
-            )
-)
+                             (add-shape-point (+ x2 +in -3/16)
+                                              (+ y2 +in 3/16))
+                             (add-shape-point (+ x2 +in 3/16)
+                                              (+ y2 +in -3/16)))
+                           (t
+                            (add-shape-point (+ (alexandria:lerp d1 x1 x2) +in)
+                                             (+ (alexandria:lerp d1 y1 y2) +in))
+                            (add-shape-point (+ (alexandria:lerp d2 x1 x2) +in)
+                                             (+ (alexandria:lerp d2 y1 y2) +in)))))))))))
     #++(b::do-dll/next (n (b::h-subholes hole))
-      (incf ofs)
-      (
+         (incf ofs)
+         (
 
-        (let* ((c (b::make-c (b::sh-bottom n) w (b::sh-end n)))
-               (d (b::make-d (b::sh-top n) w (b::sh-end n)
-                             (b::sh-falling-corner-p n)))
-               (p (b::placing w h c d)))
-          (format t "p = ~s~%" p)
-          (loop for i in p
-                for in from in by 1
-                for -in = (- in)
-                for +in = in
-                ;;for col = '(0 1 0 1)
-                do (with-polyline (:rgba col :close t)
-                     (add-shape-point (+ (b::x i)   +in) (+ (b::y i)   +in))
-                     (add-shape-point (+ (b::x i) w -in) (+ (b::y i)   +in))
-                     (add-shape-point (+ (b::x i) w -in) (+ (b::y i) h -in))
-                     (add-shape-point (+ (b::x i)   +in) (+ (b::y i) h -in))
-                     )))))))
+          (let* ((c (b::make-c (b::sh-bottom n) w (b::sh-end n)))
+                 (d (b::make-d (b::sh-top n) w (b::sh-end n)
+                               (b::sh-falling-corner-p n)))
+                 (p (b::placing w h c d)))
+            (format t "p = ~s~%" p)
+            (loop for i in p
+                  for in from in by 1
+                  for -in = (- in)
+                  for +in = in
+                  ;;for col = '(0 1 0 1)
+                  do (with-polyline (:rgba col :close t)
+                       (add-shape-point (+ (b::x i)   +in) (+ (b::y i)   +in))
+                       (add-shape-point (+ (b::x i) w -in) (+ (b::y i)   +in))
+                       (add-shape-point (+ (b::x i) w -in) (+ (b::y i) h -in))
+                       (add-shape-point (+ (b::x i)   +in) (+ (b::y i) h -in)))))))))
 
 (defun set-hole (hole &optional w h)
   (when *w*
@@ -845,6 +1072,37 @@
 #++
 (binpack2-vis :pos-x 2440 :pos-y 140 :width 1400 :height 850)
 #++
+(binpack2-vis :pos-x 3100 :pos-y 300 :width 700 :height 700)
+#++
+(binpack2-vis :pos-x 00 :pos-y 300 :width 700 :height 700)
+#++
 (glut:show-window)
 #++
 (clear-shapes)
+
+
+
+#++
+(defun newest-file (pattern)
+  (let ((a (directory pattern))
+        (d 0)
+        (f nil))
+    (loop for x in a
+          for xd = (uiop:safe-file-write-date x)
+          when (and xd (> xd d))
+            do (setf f x d xd))
+    f))
+#++
+(replay-file (newest-file "c:/tmp/binpack/regres*.lisp"))
+#++
+(replay-file (newest-file "c:/tmp/binpack/test*.BAD.lisp"))
+
+#++
+(setf *replays*
+      (directory "c:/tmp/binpack/test*.BAD.lisp"))
+
+#++(Setf *replays* nil)
+#++
+(setf *wait* nil)
+#++
+(replay-file #P"c:/tmp/binpack/test.11E1424B6EA7EFFB.BAD.lisp")
