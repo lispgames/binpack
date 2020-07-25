@@ -74,6 +74,53 @@
 ;; mode that reuses the search to try to pack multiple rects of same
 ;; width at once?
 
+#++
+(progn
+  (defun ffp (&rest r)
+    (declare (ignorable r))
+    (apply #'format t r))
+  (defun fff (&rest r)
+    (declare (ignorable r))
+    (apply #'format t r))
+  (defun ffc (&rest r)
+    (declare (ignorable r))
+    (apply #'format t r))
+  (defun ffd
+      (declare (ignorable r))
+    (apply #'format t r))
+  (defun ffi (&rest r)
+    (declare (ignorable r))
+    (apply #'format t r)))
+
+(progn
+  (defun ffp (&rest r)
+    (declare (ignore r)))
+  (defun fff (&rest r)
+    (declare (ignore r)))
+  (defun ffc (&rest r)
+    (declare (ignore r)))
+  (defun ffd (&rest r)
+    (declare (ignore r)))
+  (defun ffi (&rest r)
+    (declare (ignore r))))
+#++
+(progn
+  (defmacro ffp ((&rest r) &body body)
+    (declare (ignore r))
+    (list* 'progn body))
+  (defmacro fff ((&rest r) &body body)
+    (declare (ignore r))
+    (list* 'progn body))
+  (defmacro ffc ((&rest r) &body body)
+    (declare (ignore r))
+    (list* 'progn body))
+  (defmacro ffd ((&rest r) &body body)
+    (declare (ignore r))
+    (list* 'progn body))
+  (defmacro ffi ((&rest r) &body body)
+    (declare (ignore r))
+    (list* 'progn body)))
+
 (defclass dll ()
   ;; doubly linked list links
   ((next :accessor dll-next)
@@ -84,6 +131,7 @@
     (setf (dll-next o) o))
   (unless (slot-boundp o 'prev)
     (setf (dll-prev o) o)))
+
 (defun insert-after (prev new)
   (cond
     (prev
@@ -202,17 +250,24 @@
 (defclass hole-vertex (dll)
   ((x :accessor hv-x :initform 0 :initarg :x)
    (y :accessor hv-y :initform 0 :initarg :y)
-   ;; QN and QW links for top of left-notch
+   ;; Q<->QN and Q<->QW links. Links from Q to N/W if Q is also set,
+   ;; otherwise from N/W back to Q
    (n :accessor hv-n :initform nil :initarg :qn)
    (w :accessor hv-w :initform nil :initarg :qw)
-   ;; link back from QN,QW to top of left-notch
+   ;; true if node is a Q vertex (top of left notch), NIL otherwise
    (q :accessor hv-q :initform nil :initarg :q)
-   ;; if this is part of a vertical edge, what part it is (otherwise,
-   ;; should be a QN point on a horizontal edge)
+   ;; what type of vertical edge this vertex is corner of
+   ;; (:left-notch, :leftmost, :rightmost, :falling, etc) or :QW or
+   ;; :QN for QW or QN vertices in middle of span
    (classify :accessor hv-classify :initform nil)
+   ;; where this vertex is on a vertical edge, :top,:middle,:bottom,
+   ;; or :middle if it is QN vertex in middle of horizontal span
+   (corner :accessor hv-corner :initform nil)
    ;; if this vertex is the bottom of a leftmost edge of a subhole, or
    ;; 'end' vertex for a subhole, link to the subhole
-   (sh :accessor hv-sh :initform nil)))
+   (sh :accessor hv-sh :initform nil)
+   ;; if vertex is falling corner, link to hole
+   (hole :accessor hv-hole :initform nil)))
 
 (defmacro %do-hole-vertices ((node dll dx dy endp iterator) &body body)
   (alexandria:with-gensyms (prev n)
@@ -235,38 +290,39 @@
 (defmacro do-hole-vertices/prev ((node dll dx dy &optional endp) &body body)
   `(%do-hole-vertices (,node ,dll ,dx ,dy ,endp dll-prev) ,@body))
 
-(defun up-dir (v)
+(defun up-down-dir (v)
   (cond
-    ((< (hv-y v) (hv-y (dll-prev v)))
-     'dll-prev)
-    ((< (hv-y v) (hv-y (dll-next v)))
-     'dll-next)
-    (t nil)))
-
-(defun down-dir (v)
-  (cond
-    ((> (hv-y v) (hv-y (dll-prev v)))
-     'dll-prev)
-    ((> (hv-y v) (hv-y (dll-next v)))
-     'dll-next)
+    ((or (< (hv-y v) (hv-y (dll-prev v)))
+         (> (hv-y v) (hv-y (dll-next v))))
+     (values 'dll-prev 'dll-next :falling))
+    ((or (< (hv-y v) (hv-y (dll-next v)))
+         (> (hv-y v) (hv-y (dll-prev v))))
+     (values 'dll-next 'dll-prev :rising))
     (t nil)))
 
 
 (defun extend-edge-up (v dir)
   ;; find local maximum of Y coord along this edge
   (unless dir
-    (break "tried to extend horizontal sub-edge up?")
     (return-from extend-edge-up v))
   (loop for n = (funcall dir v)
         while (and (= (hv-x v) (hv-x n))
                    (< (hv-y v) (hv-y n)))
         do (setf v n))
   v)
+(defun extend-edge-right (v dir)
+  ;; find local maximum of x coord along this edge
+  (unless dir
+    (return-from extend-edge-right v))
+  (loop for n = (funcall dir v)
+        while (and (= (hv-y v) (hv-y n))
+                   (< (hv-x v) (hv-x n)))
+        do (setf v n))
+  v)
 
 (defun extend-edge-down (v dir)
   ;; find local minimum of Y coord along this edge
   (unless dir
-    (break "tried to extend horizontal sub-edge up?")
     (return-from extend-edge-down v))
   (loop for n = (funcall dir v)
         while (and (= (hv-x v) (hv-x n))
@@ -274,122 +330,179 @@
         do (setf v n))
   v)
 
-(defun classify-vertical-edge (top bottom)
-  (let ((up (up-dir bottom))
-        (down (down-dir top))
-        (rising (eql (dll-prev top) bottom))
-        (falling (eql (dll-next top) bottom)))
-    (when (eql (dll-prev top) (dll-prev bottom))
-      (return-from classify-vertical-edge :degenerate))
-    (unless (and up down)
-      (return-from classify-vertical-edge nil))
-    (setf top (extend-edge-up top up))
-    (setf bottom (extend-edge-down bottom down))
-    (let ((dxt (- (hv-x (funcall up top)) (hv-x top)))
-          (dxb (- (hv-x (funcall down bottom)) (hv-x bottom))))
-      (cond
-        ((and rising (plusp dxt) (plusp dxb))
-         :leftmost)
-        ((and rising (minusp dxt) (minusp dxb))
-         :left-notch)
-        ((and falling (minusp dxt) (plusp dxb))
-         :falling-edge)
+(defun classify-vertical-edge (v)
+  (multiple-value-bind (up down dir) (up-down-dir v)
+    (let* ((top (extend-edge-up v up))
+           (bottom (extend-edge-down v down))
+           (rising (eql dir :rising))
+           (falling (eql dir :falling))
+           (corner (cond ((eql top v) :top)
+                         ((eql bottom v) :bottom)
+                         (t :middle))))
+      (unless (and up down)
+        ;; N vertex or bug?
+        (assert (eql (hv-classify v) :qn))
+        (assert (eql (hv-corner v) :middle))
+        (return-from classify-vertical-edge
+          (values (hv-classify v) (hv-corner v))))
+      (when (eql top bottom)
+        (break "degen")
+        (return-from classify-vertical-edge
+          (values :degenerate :middle)))
 
-        ;; shouldn't happen in bottom-left packing
-        ((and falling (plusp dxt) (plusp dxb))
-         :right-notch)
+      (let ((dxt (- (hv-x (funcall up top)) (hv-x top)))
+            (dxb (- (hv-x (funcall down bottom)) (hv-x bottom))))
+        (values
+         (cond
+           ((and (not (eql v top))
+                 (not (eql v bottom)))
+            (assert (eql (hv-corner v) :middle))
+            (hv-classify v))
+           ((and rising (plusp dxt) (plusp dxb))
+            ;; cw: -x +y +x
+            :leftmost)
+           ((and rising (minusp dxt) (minusp dxb))
+            ;; cw +x +y -x
+            :left-notch)
+           ((and falling (minusp dxt) (plusp dxb))
+            ;; cw: +x -y +x
+            :falling-edge)
 
-        ;; these aren't interesting, but including for debugging for now
-        ((and rising (minusp dxt) (plusp dxb))
-         :step-down)
-        ((and rising (plusp dxt) (minusp dxb))
-         :step-up)
-        ((and falling (plusp dxt) (minusp dxb))
-         :rising-edge)
-        ((and falling (minusp dxt) (minusp dxb))
-         :rightmost)
+           ;; shouldn't happen in bottom-left packing
+           ((and falling (plusp dxt) (plusp dxb))
+            ;; cw: -x -y +x
+            :right-notch)
 
-        (t (list :dxt dxt :dxb dxb :rising rising :falling falling))))))
+           ;; these aren't interesting, but including for debugging for now
+           ((and rising (minusp dxt) (plusp dxb))
+            ;; CW: -x +y -x
+            :step-up)
+           ((and rising (plusp dxt) (minusp dxb))
+            ;; cw: +x +y +x
+            :rising-edge)
+           ((and falling (plusp dxt) (minusp dxb))
+            ;; cw: -x -y -x
+            :step-down)
+           ((and falling (minusp dxt) (minusp dxb))
+            ;; cw: +x -y -x
+            :rightmost)
+           ((and (not falling) (not rising) (eql (hv-corner v) :middle))
+            (hv-classify v))
+           (t (error "~s"(list :dxt dxt :dxb dxb :rising rising :falling falling))))
+         corner)))))
 
 
 (defun set-qnw (v)
-  (assert (equalp (hv-classify v) '(:left-notch :top)))
-  ;; walk NEXT until we find a horizontal edge that crosses this X value
+  ;; build Q->N and Q->W links for a hole that doesn't have any old
+  ;; Q->N links from before this left-notch was added
+  (ffp "set qnw @ ~s~%" (p v))
+  (assert (eql (hv-classify v) :left-notch))
+  (assert (eql (hv-corner v) :top))
+  (setf (hv-q v) t)
+  ;; walk NEXT until we find an X value right of Q
   (let ((x1 (hv-x v))
-        (y1 (hv-y v))
-        (v2a nil))
+        (y1 (hv-y v)))
     (block h
       (do-dll/next (v2 (dll-next v))
         (let* ((v3 (dll-next v2))
                (x2 (hv-x v2))
                (x3 (hv-x v3)))
           (cond
-            ((= x2 x1)
-             (assert (/= (hv-y v) (hv-y v2)))
-             (assert (not (hv-q v2)))
+            ((and (= x1 x2)
+                  ;; not top or middle of a falling edge
+                  (<= (hv-y v2)
+                      (hv-y (dll-next v2))))
              ;; directly under a vertex, just link to it
+             (assert (not (hv-n v2)))
+             ;; can't be a :top or :middle corner
+             (assert (eql (hv-corner v2) :bottom))
              (setf (hv-n v) v2)
-             (setf (hv-q v2) v)
-             (setf v2a v2)
+             (setf (hv-n v2) v)
+             (ffp " link n ~s -> ~s~%" (p v) (p v2))
              (return-from h nil))
             ((< x2 x1 x3)
              (assert (= (hv-y v2) (hv-y v3)))
              ;; under an edge, split it and link to new vertex
-             (setf (hv-n v) (make-hole-vertex x1 (hv-y v2)))
-             (setf (hv-q (hv-n v)) v)
-             (setf (hv-classify (hv-n v)) (list :qn :top))
-             (insert-after v2 (hv-n v))
-             (setf v2a v2)
-             (return-from h nil))
-            ((eql v2 v)
+             (let ((n (make-hole-vertex x1 (hv-y v2) v2)))
+               (setf (hv-n v) n)
+               (setf (hv-n n) v)
+               (setf (hv-classify n) :qn)
+               (setf (hv-corner n) :middle)
+               (ffp " add n ~s -> ~s~%" (p v) (p n))
+               (return-from h nil)))
+            ((and (hv-n v2) (hv-q v2)
+                  (< x2 x1))
+             ;; follow Q->N links, but make sure next iteration sees the
+             ;; N vertex so we can notice if Q is between that and next vertex
+             (setf v2 (dll-prev (hv-n v2))))
+            ((or (> x2 x1) (eql v2 v))
              (error "couldn't find edge above left notch?"))))))
 
-    (let ((left nil))
-      (flet ((add (n)
-               (if left
-                   (when (< (hv-x n) (hv-x left))
-                     (setf left n))
-                   (setf left n))))
-        (do-dll/next (v2 v2a)
-          (let* ((v3 (dll-next v2))
-                 (y2 (hv-y v2))
-                 (y3 (hv-y v3)))
-            (cond
-              ((and (> (hv-x v2) (hv-x v))
-                    (= y2 y1))
-               (add v2))
-              ((and (> (hv-x v2) (hv-x v))
-                    (< y3 y1 y2))
-               (add v2))
-              ((eql v2 v)
-               (unless left
-                 (error "couldn't find edge right of left notch?"))))))
-        (when left
-          (let* ((v2 left)
-                 (v3 (dll-next v2))
-                 (y2 (hv-y v2))
-                 (y3 (hv-y (dll-next v2))))
-            (cond
-              ((= y2 y1)
-               (add v2)
-               (assert (/= (hv-x v) (hv-x v2)))
-               ;; directly left of a vertex, just link to it
-               (setf (hv-w v) v2)
-               (assert (not (hv-q v2)))
-               (setf (hv-q v2) v)
-               (setf v2a v2)
-               (return-from set-qnw t))
-              ((< y3 y1 y2)
-               (assert (= (hv-x v2) (hv-x v3)))
-               ;; left of an edge, split it and link to new vertex
-               (setf (hv-w v) (make-hole-vertex (hv-x v2) y1))
-               (setf (hv-q (hv-w v)) v)
-               (setf (hv-classify (hv-n v)) (list :qw :right))
-               (insert-after v2 (hv-w v))
-               (setf v2a v2)
-               (return-from set-qnw nil))
-              (t
-               (error "broken?"))))))))
+    ;; walk PREV until we find a Y value above Q
+    (assert (eql (hv-classify (dll-prev v)) :left-notch))
+    (assert (eql (hv-corner (dll-prev v)) :bottom))
+    (let ((rightmost nil)
+          (count 0))
+      (do-dll/prev (v2 (dll-prev v))
+        (ffp "~s @ ~s,~s,~s ~s~%" (p v2) (p (hv-n v2)) (p (hv-w v2)) (hv-q v2)
+          (hv-classify v2))
+        (let* ((v3 (dll-next v2))
+               (y2 (hv-y v2))
+               (y3 (hv-y (dll-next v2))))
+          (when (or (eql (hv-classify v2) :rightmost)
+                    (eql (hv-classify v2) :falling-edge))
+            (setf rightmost t))
+          (incf count)
+          (when (> count 1000)
+            (error "looped?"))
+          (cond
+            #++((and (= y2 y1)
+                     (> (hv-y (dll-prev v2)) y1))
+                (assert (/= (hv-x v) (hv-x v2)))
+                (assert (eql (hv-classify v2) :rightmost))
+                (assert (eql (hv-corner v2) :bottom))
+                (assert (not (hv-q v2)))
+                ;; directly left of lower vertex of rightmost edge, just link to it
+                (setf (hv-w v) v2)
+                (setf (hv-q v2) v)
+                (ffp " link n ~s -> ~s~%" (p v) (p v2))
+                (return-from set-qnw t))
+            ((and (= y2 y1)
+                  ;; not top of rightmost edge next to falling edge
+                  (<= (hv-x v2)
+                      (hv-x (dll-prev v2))))
+             (assert (/= (hv-x v) (hv-x v2)))
+             (assert (not (hv-w v2)))
+             ;; directly left of another vertex (upper left of lower
+             ;; notch or step down) use it directly
+             (setf (hv-w v) v2)
+             (setf (hv-w v2) v)
+             (ffp " link w1 ~s -> ~s~%" (p v) (p v2))
+             (return-from set-qnw t))
+
+            ((< y3 y1 y2)
+             (assert (= (hv-x v2) (hv-x v3)))
+             ;; left of an edge, split it and link to new vertex
+             (let ((w (make-hole-vertex (hv-x v2) y1 v2)))
+               (setf (hv-w v) w)
+               (setf (hv-w w) v)
+               (setf (hv-classify w) :qw)
+               (setf (hv-corner w) :middle)
+               (ffp " add w2 ~s -> ~s~%" (p v) (p w))
+               (return-from set-qnw nil)))
+            ;; follow QN->Q links if we haven't seen rightmost edge yet
+            ((and (hv-n v2)
+                  (not (hv-q v2))
+                  (< y2 y1)
+                  (not rightmost))
+             (setf v2 (dll-next (hv-n v2))))
+            ;; and Q->QW links
+            ((and (hv-w v2)
+                  (hv-q v2))
+             (assert (< y2 y1))
+             (setf v2 (dll-next (hv-w v2))))
+            ((or (> y2 y1) (eql v2 v))
+             (error "couldn't find edge right of Q node?")))))))
   nil)
 
 (defun classify-vertex (v)
@@ -414,21 +527,22 @@
     ;; make sure we have only flat lines
     (assert (and (or (zerop dx1) (zerop dy1))
                  (or (zerop dx2) (zerop dy2))))
-    (let* ((v2 (if (zerop dx1) prev next))
-           (top (if (> y (hv-y v2)) v v2))
-           (bottom (if (> y (hv-y v2)) v2 v))
-           (%edge (classify-vertical-edge top bottom))
-           (edge (when %edge (list %edge (if (eql top v) :top :bottom)))))
-      #++(assert (not (and (hv-classify v) edge)))
+    (multiple-value-bind (edge corner)
+        (classify-vertical-edge v)
+      (when (eql corner :middle)
+        (assert (member (hv-classify v) '(:qn :qw)))
+        (assert (member edge '(:qn :qw :rightmost))))
       (setf (hv-classify v) (or edge (hv-classify v)))
-      (when (equalp edge '(:left-notch :top))
+      (setf (hv-corner v) corner)
+      (when (and (eql edge :left-notch)
+                 (eql corner :top))
         (set-qnw v))
       edge)))
 
 (defclass point ()
   ((x :initform 0.0 :initarg :x :accessor x)
    (y :initform 0.0 :initarg :y :accessor y)
-   (ref :initform nil :initarg :Ref :accessor ref)))
+   (ref :initform nil :initarg :ref :accessor ref)))
 
 (defun make-point (x y &key ref)
   (make-instance 'point :x x :y y :ref ref))
@@ -436,16 +550,17 @@
 (defun point-p (x)
   (typep x 'point))
 
-;; used to indicate a point in D that is above a gap caused by
-;; skipping a subhole. Depending on the height of the placement and Y
+;; used to indicate a point in D that is above a gap or gaps caused by
+;; skipping subholes. Depending on the height of the placement and Y
 ;; value of the support from C, we might be able to place something
 ;; against the edge below this point or might not
 (defclass point-gap (point)
-  ((gap :initform nil :accessor gap :initarg :gap)
-   (gap-y :initform 0 :accessor gap-y :initarg :gap-y)))
+  ;; list of y,h for each gap on the vertical edge ending at this
+  ;; point
+  ((gaps :initform nil :accessor gaps :initarg :gaps)))
 
-(defun make-point-gap (x y gap &optional (gap-y 0))
-  (make-instance 'point-gap :x x :y y :gap gap :gap-y gap-y))
+(defun make-point-gap (x y gaps)
+  (make-instance 'point-gap :x x :y y :gaps gaps))
 
 (defun point-gap-p (x)
   (typep x 'point-gap))
@@ -477,12 +592,11 @@
 (defclass f-edge ()
   ;; f-edge contains the vertical edges of the top or bottom edge of F
   ;; data structure, in the form of vectors of lower and upper
-  ;; points. Gap stores amount skipped in corresponding edge by a
-  ;; Q->QN link if any
+  ;; points. Gap stores amount skipped in corresponding edge by
+  ;; Q->QN links if any
   ((d :accessor f-d :initarg :d)
    (h :accessor f-h :initarg :h)
-   (gap :accessor f-gap :initarg :gap :initform nil)
-   (gap-y :accessor f-gap-y :initarg :gap-y :initform nil)))
+   (gaps :accessor f-gaps :initarg :gaps :initform nil)))
 
 ;; subhole
 (defclass subhole (dll)
@@ -500,7 +614,7 @@
 
    ;; to be calculated in constructor
 
-   ;; true if subhole has a "falling corner"
+   ;; link to corner if subhole has a "falling corner"
    (falling-corner-p :accessor sh-falling-corner-p :initarg :falling)
    ;; for fast rejection of things that definitely won't fit
    (max-width :accessor sh-max-width :initarg :width)
@@ -514,6 +628,9 @@
 
    ;; link to dll of subholes for this hole
    (subholes :accessor h-subholes :initform nil)
+   ;; link to corner if hole has a "falling corner"
+   (falling-corner-p :accessor h-falling-corner-p :initarg :falling
+                     :initform nil)
    ;; for fast rejection of things that definitely won't fit
    (max-width :accessor ht-max-width :initform 0)
    (max-height :accessor ht-max-height :initform 0)))
@@ -532,178 +649,363 @@
     (insert-after prev a)
     a))
 
+(defun pxy (tx ty)
+  (loop for x = (pop tx)
+        for y = (pop ty)
+        while (or x y)
+        collect (list x y)))
+
 (defun update-subhole (subhole)
   (let* ((start (dll-next (sh-start subhole)))
          (top start)
          (bottom (dll-prev start))
          (top-x nil)
          (top-y nil)
-         (top-gap nil)
-         (top-gap-y nil)
+         (top-gaps nil)
          (bottom-x nil)
          (bottom-y nil)
          (ref nil)
          (end nil)
-         (falling 0)
+         (falling nil)
+         (x-trim nil)
          (q nil))
     (assert (not (eql top bottom)))
     (assert (= (hv-x top) (hv-x bottom)))
     (assert (> (hv-y top) (hv-y bottom)))
+    (fff "update subhole ~s, start=~s, end=~s~%"
+      subhole
+      (p (sh-start subhole))
+      (p (sh-endv subhole)))
+    (fff "  top=~s, bottom=~s~%" (p top) (p bottom))
     (with-minmax (x1 x2 mmx)
       (with-minmax (y1 y2 mmy)
+        ;; we build bottom of subhole first, since a lower notch
+        ;; could block the subhole completely, and we don't want
+        ;; to include any falling corner in that case.
+        (fff "q1 = ~s~%" (p q))
+        (let ((hit-q nil)
+              (prev-dy nil)
+              (once nil)
+              (has-rightmost nil))
+          (flet ((add (x y v &optional force)
+                   (if (and (not force)
+                            (eql y (car bottom-y)))
+                       (fff "  add drop ~s ~s ~s~%" x y (p v))
+                       (progn
+                         (fff "  add ~s ~s ~s~%" x y (p v))
+                         (push v ref)
+                         (push x bottom-x)
+                         (push y bottom-y)))))
+            (do-hole-vertices/prev (v bottom dx dy)
+              (fff "  b@ ~s / ~s ~s w~s ~s ~s~%" (p v) dx dy (p (hv-w v))
+                (hv-classify v) (hv-corner v))
+              ;; to build subhole bottom, we walk CCW from bottom
+              ;; (following only prev) collecting vertical edges,
+              ;; stopping at leftwards edge or first hv-w
+
+              ;; once we see hv-q, we skip to hv-w and continue
+              ;; (following hv-w) until we see a leftwards edge,
+              ;; collecting only the points whose y value is > y value of
+              ;; hv-n (can be any # >= 1)
+              (when (and dy (not (zerop dy)))
+                (setf prev-dy dy))
+              (when (and (not hit-q)
+                         (hv-q v))
+                (fff "q2 ~s -> ~s (~s, ~s)~%" (p q) (p v)
+                  (hv-q v) (p (hv-w v)))
+                (setf q v)
+                (setf hit-q v))
+              (cond
+                ;; first point
+                ((and (not dy) (not hit-q))
+                 (fff " b1 ~s,~s  ~s~%" (hv-x v) (hv-y (dll-next v)) (p v))
+                 (add (hv-x v) (hv-y (dll-next v)) v t)
+                 (add (hv-x v) (hv-y v) v))
+                ;; leftwards edge, just passed right edge or left notch,
+                ;; depending on direction of previous vertical edge
+                ((and dx (minusp dx))
+                 (fff "leftwards ~s ~s~%" dx once)
+                 (when (and (not hit-q) (not once))
+                   (setf has-rightmost t)
+                   (fff "q3 ~s ->" (p q))
+                   (unless q
+                     (setf q (dll-next v))
+                     ;; we are at top of right edge, follow it to bottom corner
+                     (loop while (= (hv-x q) (hv-x (dll-next q)))
+                           do (setf q (dll-next q)))
+                     (fff "~s~%" (p q)))
+                   (when (and prev-dy (minusp prev-dy))
+                     (assert (hv-w q))))
+                 ;; we go 1 extra edge in case there is a falling edge
+                 (when once
+                   (return nil))
+                 (unless (= (hv-y (dll-prev v))
+                            (hv-y v))
+                   (fff " set once @ ~s,~s~%"
+                     (p (dll-prev v)) (p v))
+                   (setf once t)))
+                ((member (hv-classify v)
+                         '(:leftmost :rising-edge))
+                 (return nil))
+                ;; upwards vertical edges
+                ((and dy
+                      (plusp dy)
+                      ;; ignore extra points in the middle of vertical edge
+                      (not (and (hv-w v)
+                                (eql (hv-x (dll-prev v))
+                                     (hv-x v))))
+                      ;; if we have seen a Q vertex for this subhole,
+                      ;; only include edges that extend above the Q
+                      ;; vertex, since ones below that can't support a
+                      ;; placement in this subhole
+                      (or (not hit-q)
+                          (> (hv-y v) (hv-y q)))
+                      ;; ignore any edges left of last added edge,
+                      ;; which should be from some other subhole below
+                      ;; this one
+                      (> (hv-x v) (car bottom-x)))
+                 (fff " b2 ~s~%" (p v))
+                 (add (hv-x v) (hv-y v) v)
+                 ;; if edge extends past the QN vertex for this subhole
+                 ;; (if any), stop here and tell the top pass to stop
+                 ;; at this X coordinate
+                 (when (and hit-q
+                            (>= (hv-y v) (hv-y (hv-n q))))
+                   (assert (not x-trim))
+                   (setf x-trim (hv-x v))
+                   (return nil)))
+                ;; downwards edges
+                ((and dy
+                      (minusp dy)
+                      (not hit-q)
+                      (not (hv-n v))
+                      (not (hv-q v))
+                      (not once))
+                 (unless hit-q
+                   (add (hv-x v) (hv-y v) v)
+                   (fff " b3 ~s~%" (p v)))))
+              ;; follow q->qw
+              (when (and (hv-w v) (hv-q v))
+                (fff " jump ~s (~s) -> ~s~%" (p v) (hv-q v) (p (hv-w v)))
+                (assert (dll-next (hv-w v)))
+                (jump (hv-w v))))))
         (let ((hit-q nil))
-          (do-hole-vertices/next (v top dx dy endp)
-            ;; to build a subhole top, we walk clockwise from start
-            ;; (following hv-n) collecting vertical edges until we see
-            ;; either a line moving left (= end of top), or a hv-q
-            ;; after a normal vertex.
+          (flet ((add (x y &optional gap keep)
+                   (if (and (not keep)
+                            (eql y (car top-y)))
+                       (fff "    drop ~s,~s,~s~%" x y gap)
+                       (progn
+                         (fff "     add ~s,~s ~s~%" x y gap)
+                         (push x top-x)
+                         (push y top-y)
+                         (push gap top-gaps)))))
 
-            ;; once we see the hv-q, we continue until we see a
-            ;; leftwards edge, only collecting edges that go below the
-            ;; y value of the hv-q (should be 1 or 2 depending on
-            ;; whether we have a falling edge in hole and where it is)
-            (when (and dx (minusp dx))
-              (unless end
-                (setf end (hv-x (dll-prev v))))
-              (return nil))
-            (when (and (not hit-q)
-                       dy
-                       (zerop dy)
-                       (hv-q v))
-              (setf end (hv-x v))
-              (setf hit-q v)
-              (setf q v))
-            (cond
-              ;; first point
-              ((and (not dy) (not hit-q))
-               (push (hv-x v) top-x)
-               (push (hv-y (dll-prev v)) top-y)
-               (push (hv-x v) top-x)
-               (push (hv-y v) top-y)
 
-               (push nil top-gap)
-               (push nil top-gap-y))
-              ;; upwards vertical edges
-              ((and dy
-                    (plusp dy)
-                    (not (hv-n v)))
-               (unless hit-q
+            (do-hole-vertices/next (v top dx dy endp)
+              (fff "  t@ ~s / ~s ~s | ~s, q~s n~s w~s~%" (p v) dx dy
+                (hv-classify v)
+                (p (hv-n v)) (p (hv-w v))
+                (hv-q v))
+
+              ;; to build a subhole top, we walk clockwise from start
+              ;; collecting vertical edges until we see either a line
+              ;; moving left (= end of top), or a QN vertex on a
+              ;; horizontal edge (which should be the N vertex for this
+              ;; subhole's Q node, but can't check that directly since
+              ;; it hasn't been linked yet)
+
+              ;; While walking, we need to follow Q->QN links, grouping
+              ;; any set of edges with same X coord into 1 edge with a
+              ;; 'gap' for every Q->QN link on that edge,
+
+              ;; once we see the QN, we continue until we see a
+              ;; leftwards edge, only collecting edges that go below the
+              ;; y value of the hv-q (should be 1 or 2 depending on
+              ;; whether we have a falling edge in hole and where it is)
+              (when (and dx (minusp dx))
+                (unless end
+                  (setf end (hv-x (dll-prev v))))
+                (return nil))
+
+              ;; if 'bottom' pass stopped early, trim top to same X coords
+              (when (and x-trim
+                         (>= (hv-x v) x-trim))
+                ;; x-trim must be right of a Q->QN link, so if we
+                ;; haven't seen that yet something is wrong
+                (assert hit-q)
+                (fff "~&` trim top @ ~s, q:~s top-y ~s~%"
+                  x-trim (p q) (pxy top-x top-y))
+                ;;(add x-trim (car top-y) nil t)
+                (add x-trim (hv-y q) nil t)
+                (return nil))
+              ;; find an N vertex
+              (when (and (not hit-q)
+                         (hv-n v)
+                         (not (hv-q v)))
+                (fff " hit qn @ ~s~%" (p v))
+                (setf end (hv-x v))
+                (setf hit-q v)
+                #++(setf q v))
+              (cond
+                ;; first point
+                ((and (not dy) (not hit-q))
+                 (fff " top1 ~s ~s~%" (p (dll-prev v)) (p v))
                  (push (hv-x v) top-x)
-                 (push (hv-y v) top-y)
-                 (if (hv-q v)
-                     (progn
-                       (push dy top-gap)
-                       (push (- (hv-y v) dy) top-gap-y))
-                     (progn
-                       (push nil top-gap)
-                       (push nil top-gap-y)))))
-              ;; downwards edges
-              ((and dy
-                    (minusp dy)
-                    (not (hv-q v)))
-               (when (or (not hit-q)
-                         (<= (hv-y v)
-                             (hv-y hit-q)))
-                 (incf falling)
-                 (push (hv-x v) top-x)
-                 (push (hv-y v) top-y)
-                 (push nil top-gap)
-                 (push nil top-gap-y))))
-            ;; follow hv-n
-            (when (and dx (zerop dx) (hv-n v))
-              (jump (hv-n v)))))
-        (format t "q1 = ~s~%" (and q (list (hv-x q) (hv-y q))))
-        (let ((hit-q nil))
-          (do-hole-vertices/prev (v bottom dx dy)
-            ;; to build subhole bottom, we walk CCW from bottom
-            ;; (following only prev) collecting vertical edges,
-            ;; stopping at leftwards edge or first hv-w
+                 (push (hv-y (dll-prev v)) top-y)
+                 (add (hv-x v) (hv-y v)))
+                ;; upwards vertical edges
+                ((and dy
+                      ;; we get dx,dy set when jumping past gaps
+                      (zerop dx)
+                      (plusp dy))
+                 (fff " top2 ^ @ ~s ~s ~s,~s~%" (p v) hit-q dx dy)
+                 (let ((gap nil)
+                       ;; bottom of vertical edge
+                       (v1 (dll-prev v)))
+                   (fff "  hv-n = ~s~%" (p (hv-n v)))
+                   (loop while (and (hv-n v)
+                                    (hv-q v))
+                         for n = (hv-n v)
+                         do (push (list (hv-y v)
+                                        (- (hv-y (hv-n v))
+                                           (hv-y v)))
+                                  gap)
+                            (setf v (hv-n v))
+                         while (= (hv-x (dll-next v)) (hv-x v1))
+                         do (setf v (dll-next v)))
+                   (fff "  v -> ~s, gaps ~s hq=~s~%" (p v) gap (p hit-q))
+                   (unless hit-q
+                     (add (hv-x v) (hv-y v) (nreverse gap)))
+                   (when gap
+                     (jump (dll-next v)))))
+                ;; downwards edges
+                ((and dy
+                      (minusp dy)
+                      ;; skip QW vertices in middle of edge
+                      (not (and (hv-w v)
+                                (not (hv-q v))
+                                (= (hv-x v)
+                                   (hv-x (dll-next v))))))
+                 (let ((up (extend-edge-up v #'dll-prev)))
+                   (cond
+                     ((or (not hit-q)
+                          (and (<= (hv-y v)
+                                   (hv-y hit-q))
+                               (> (hv-y up)
+                                  (hv-y (hv-n hit-q)))))
+                      (when (and (or (not hit-q)
+                                     (eql hit-q v)
+                                     (< (hv-y v)
+                                        (hv-y hit-q)))
+                                 (>= (hv-x (dll-next v))
+                                     (hv-x v)))
+                        (assert (not falling))
+                        (fff " set falling to ~s @ q= ~s~%" (p v) (p hit-q))
+                        (setf falling v))
+                      (fff " top3 [~s ->] ~s [-> ~s] @ ~s~%"
+                        (p (dll-prev v)) (p v) (p (dll-next v))
+                        (hv-classify v))
+                      #++(when (equalp (p v) '(9 9))
+                           (break "~s ~s" (p v) (hv-classify v)))
+                      (when (or (not hit-q)
+                                (<= (hv-y v) (hv-y hit-q)))
+                        (let ((rm (eql (hv-classify v) :rightmost)))
+                          (add (hv-x v)
+                               (if hit-q
+                                   (if rm
+                                       (min (hv-y (hv-n hit-q))
+                                            (hv-y v))
+                                       (max (hv-y (hv-n hit-q))
+                                            (hv-y v)))
+                                   (hv-y v))
+                               nil rm))))
+                     ;; if we see a falling edge after end, add 1 or 2
+                     ;; more segments to close the top of subhole
+                     ((and hit-q
+                           (or (< (hv-y v)
+                                  (hv-y (hv-n hit-q)))
+                               (eql (hv-classify v) :rightmost)))
+                      (fff " falling edge hitq : ~s, ~s~%"
+                        (p v) (car top-y))
+                      (when (> (hv-y (dll-prev v))
+                               (hv-y (hv-n hit-q)))
+                        (add (hv-x v)
+                             #++(car top-y)
+                             (min (hv-y v)
+                                  (hv-y (hv-n hit-q)))
+                             nil)
+                        (loop-finish)))))))
+              ;; follow q->n (only see them here if we already stopped
+              ;; collecting upwards edges)
+              (when (and (hv-q v) (hv-n v))
+                (assert (dll-next (hv-n v)))
+                (fff "  jump ~s -> ~s~%" (p v) (p (hv-n v)))
+                (jump (hv-n v))))))
 
-            ;; once we see hv-q, we skip to hv-w and continue
-            ;; (following hv-w) until we see a leftwards edge,
-            ;; collecting only the points whose y value is > y value of
-            ;; hv-n (can be any # >= 1)
-
-            (when (and dx (minusp dx))
-              (return nil))
-            (when (and (not hit-q)
-                       dy
-                       (zerop dy)
-                       (hv-w v))
-              (format t "q2 ~s -> ~s~%"
-                      (and q (list (hv-x q) (hv-y q)))
-                      (and v (list (hv-x v) (hv-y v))))
-              (setf q v)
-              (setf hit-q v))
-            (cond
-              ;; first point
-              ((and (not dy) (not hit-q))
-               (push v ref)
-               (push (hv-x v) bottom-x)
-               (push (hv-y (dll-next v)) bottom-y)
-               (push v ref)
-               (push (hv-x v) bottom-x)
-               (push (hv-y v) bottom-y))
-              ;; upwards vertical edges
-              ((and dy
-                    (plusp dy)
-                    (not (hv-q v)))
-               (when (or (not hit-q)
-                         (>= (hv-y v)
-                             (hv-y hit-q)))
-                 (format t "q3 ~s ->"
-                         (and q (list (hv-x q) (hv-y q))))
-                 (unless q(setf q v))
-                 ;; we are at top of right edge, follow it to bottom corner
-                 (loop while (= (hv-x q) (hv-x (dll-next q)))
-                       do (setf q (dll-next q)))
-                 (format t "~s~%" (and q (list (hv-x q) (hv-y q))))
-                 (push v ref)
-                 (push (hv-x v) bottom-x)
-                 (push (hv-y v) bottom-y)))
-              ;; downwards edges
-              ((and dy
-                    (not (zerop dy))
-                    (not (hv-n v))
-                    (not (hv-q v)))
-               (unless hit-q
-                 (push v ref)
-                 (push (hv-x v) bottom-x)
-                 (push (hv-y v) bottom-y))))
-            ;; follow hv-w
-            (when (hv-w v)
-              (jump (hv-w v)))))
-        (format t "q4 ~s~%" (and q (list (hv-x q) (hv-y q))))
+        (fff "q4 ~s~%" (and q (list (hv-x q) (hv-y q))))
 
         ;; once we have top/bottom, make sure the ends match properly
         ;; (may need to trim or extend ends depending on how previous
         ;; loops terminated, not sure yet)
         (when (or top-y bottom-y)
+          (fff "check: ~s~%       ~s~%b      ~s~%       ~s~%"
+            top-x top-y
+            bottom-x bottom-y)
+          (when (or (<= (length top-x) 2)
+                    (<= (length top-y) 2))
+            (error "short top? ~s~%" (pxy top-x top-y)))
+          (when (or (<= (length bottom-x) 2)
+                    (<= (length bottom-y) 2))
+            (error "short bottom? ~s ~s~%"
+                   bottom-x bottom-y))
 
-          (when (< (car top-y)
-                   (car bottom-y))
-            (let ((p (position (car bottom-x) top-x)))
-               (if p
-                  (setf top-x (subseq top-x p)
-                        top-y (subseq top-y p)
-                        top-gap (subseq top-gap p)
-                        top-gap-y (subseq top-gap-y p))
-                  (progn
-                    (format t "top-x = ~s~%top-y = ~s~%bot-x = ~s~%bot-y = ~s~%"
-                            top-x top-y bottom-x bottom-y)
-                    (break "?")))))
+          (when (/= (car top-x)
+                    (car bottom-x))
+            (let ((end (min (car top-x)
+                            (car bottom-x))))
+              (cond
+                ((= end (car bottom-x))
+                 (fff "trimming top to ~s~%" end)
+                 (loop for (x next) = top-x
+                       when (= x end)
+                         return nil
+                       when (< next end x)
+                         do (fff " moving end of top to ~s (~s,~s,~s)~%"
+                              end (car top-x) (car top-y) (car top-gaps))
+                            (setf (car top-x) end)
+                            (loop-finish)
+                       else
+                         do (fff "dropping ~s,~s,~s~%"
+                              (car top-x) (car top-y) (car top-gaps))
+                            (pop top-x)
+                            (pop top-y)
+                            (pop top-gaps)))
+                ((= end (car top-x))
+                 ;; trim bottom (not sure this can happen?)
+                 #++(break "todo")))
+
+              #++(progn
+                   (fff "top-x = ~s~%top-y = ~s~%bot-x = ~s~%bot-y = ~s~%"
+                     top-x top-y bottom-x bottom-y)
+                   (error "?"))))
           (assert (= (length top-x) (length top-y)))
           (assert (= (length bottom-x) (length bottom-y)))
+          #++
           (let ((ey1 (min (car bottom-y) (cadr bottom-y)))
                 (ey2 (max (car top-y) (cadr top-y))))
+            (format t "update y ~s -> ~s, ~s -> ~s~%"
+                    (car top-y) ey1
+                    (car bottom-y) ey2)
             (setf (car top-y) ey1)
             (setf (car bottom-y) ey2)))
-        (setf falling
-              (and (cddr top-y)
-                   (< (cadr top-y) (caddr top-y))))
 
         (flet ((make-dh (xx yy &optional making-c refs)
+                 (fff " make-dh ~s~%  ~s~%  ~s~% @ ~s~%"
+                   making-c
+                   xx yy
+                   (map 'list #'p refs))
                  (loop for y0 = nil then y
+                       for x0 = nil then x
                        for x in xx
                        for y in yy
                        for ref = (pop refs)
@@ -723,32 +1025,42 @@
                                                    :ref ref)
                                  into h
 
-                       finally (return (list :d (coerce d 'vector)
-                                             :h (coerce h 'vector))))))
-          (setf (sh-falling-corner-p subhole) falling)
+                       finally (progn
+                                 (fff "  d:~s~%  h:~s~%"
+                                   (mapcar 'pp d)
+                                   (mapcar 'pp h))
+                                 (return (list :d (coerce d 'vector)
+                                               :h (coerce h 'vector)))))))
+          (if (and falling
+                   (> (hv-y falling)
+                      (hv-y q))
+                   #++(<= (hv-x falling)
+                          (hv-x q)))
+              (setf (sh-falling-corner-p subhole) falling)
+              (setf (sh-falling-corner-p subhole) nil))
+          (fff "  --falling corner = ~s (~s)~%"
+            (p (sh-falling-corner-p subhole))
+            (sh-falling-corner-p subhole))
           (setf (sh-top subhole) (apply
-                               #'make-instance
-                               'f-edge
-                               :gap (coerce (nreverse top-gap)
-                                            'vector)
-                               :gap-y (coerce (nreverse top-gap-y)
-                                              'vector)
-                               (make-dh (nreverse top-x)
-                                        (nreverse top-y))))
-          (setf (sh-bottom subhole) (apply
                                   #'make-instance
                                   'f-edge
-                                  (make-dh (nreverse bottom-x)
-                                           (nreverse bottom-y)
-                                           t
-                                           (nreverse ref)))
-)
-          (setf (sh-end subhole) end)
+                                  :gaps (coerce (nreverse top-gaps)
+                                                'vector)
+                                  (make-dh (nreverse top-x)
+                                           (nreverse top-y))))
+          (setf (sh-bottom subhole) (apply
+                                     #'make-instance
+                                     'f-edge
+                                     (make-dh (nreverse bottom-x)
+                                              (nreverse bottom-y)
+                                              t
+                                              (nreverse ref))))
+          (setf (sh-end subhole) (hv-x q))
           (setf (sh-endv subhole) q)
+          (assert (not (hv-sh q)))
           (setf (hv-sh q) subhole)
           (setf (sh-max-width subhole) (- x2 x1))
-          (setf (sh-max-height subhole) (- y2 y1))))))
-)
+          (setf (sh-max-height subhole) (- y2 y1)))))))
 
 (defun make-subhole (hole start prev &key (update t))
   (let ((s (make-instance 'subhole
@@ -764,27 +1076,92 @@
     (when update
       (update-subhole s))
     (insert-after prev s)
-            s)
-)
+    s))
 
-(defun make-subholes (hole)
+(defun clean-subholes (hole)
+  ;; to simplify things, sometimes we want to just rebuild subholes
+  ;; from scratch, so remove any extra vertices in the middle of an
+  ;; edge (old N,W verts, previous corner directly under edge of
+  ;; placement, etc), and clean up stale subhole backlinks
+  (fff "cleaning verts in hole ~s~%" hole)
+  (flet ((r (v)
+           (fff "   clean up vertex ~s (~s)~%" (p v) v)
+           (when (eql v (h-vertices hole))
+             (setf (h-vertices hole) (dll-prev v)))
+           (delete-node v)))
+    (let ((c nil))
+      (do-dll/next (n (h-vertices hole))
+        (fff "  ~s -> ~s -> ~s~%"
+          (p (dll-prev n)) (p n) (p (dll-next n)))
+        (setf (hv-sh n) nil)
+        (cond
+          ((and (= (hv-x (dll-prev n))
+                   (hv-x n))
+                (= (hv-y (dll-prev n))
+                   (hv-y n)))
+           ;; repeated point, probably from touching corners,
+           ;; was removed by other test so keep it this time
+           (error "shouldn't happen"))
+          ((and (or (not (hv-n n))
+                    (not (hv-w n)))
+                (or (= (hv-x (dll-prev n))
+                       (hv-x n)
+                       (hv-x (dll-next n)))
+                    (= (hv-y (dll-prev n))
+                       (hv-y n)
+                       (hv-y (dll-next n)))))
+           (fff "  remove2 ~s~%" (p n))
+           (push n c))))
+      (when c
+        (fff "   removing extra vertx ~s~%" (mapcar 'p c)))
+      ;; remove separately so we don't confuse iteration
+      (map nil #'r c))))
+
+(defun make-subholes (hole &key clean)
+  (when clean
+    (clean-subholes hole)
+    (fff "cleaned~%"))
+
   (with-minmax (x1 x2 mmx)
     (with-minmax (y1 y2 mmy)
-      (let ((edges))
+      (let ((edges (make-hash-table)))
+        ;; find edges and bounds, build Q links, classify vertices
         (do-dll/next (n (h-vertices hole))
           (mmx (hv-x n))
           (mmy (hv-y n))
-          (when (equalp '(:leftmost :top) (classify-vertex n))
-            (push n edges)))
+          ;; run for side effects
+          (classify-vertex n)
+          (fff "classify ~s : ~s, ~s~%"
+            (p n) (hv-classify n) (hv-corner n))
+          (when (and (eql (hv-classify n) :leftmost)
+                     (eql (hv-corner n) :top))
+            (setf (gethash n edges) n)))
 
         (setf (ht-max-width hole) (- x2 x1))
         (setf (ht-max-height hole) (- y2 y1))
 
+        (when (and clean (h-falling-corner-p hole))
+          (setf (hv-hole (h-falling-corner-p hole)) nil)
+          (setf (h-falling-corner-p hole) nil))
+
         ;; we build subholes in 2nd pass since we need to wait until
         ;; classify-vertex builds the QN/QW links for all nodes
-        (loop for e in edges
+        (loop for e being the hash-keys of edges
               for h = (make-subhole hole e nil)
                 then (make-subhole hole e h)
+              for f = (sh-falling-corner-p h)
+              when f
+                do (if (h-falling-corner-p hole)
+                       (assert (eql f (h-falling-corner-p hole)))
+                       (progn
+                         (when (hv-hole f)
+                           (if clean
+                               (setf (h-falling-corner-p (hv-hole f))
+                                     nil)
+                               (assert (eql hole (hv-hole f)))))
+                         (setf (h-falling-corner-p hole)
+                               (sh-falling-corner-p h)
+                               (hv-hole f) hole)))
               finally (return h))))))
 
 (defun make-hole (v &optional prev)
@@ -818,9 +1195,25 @@
   (and (= (hv-x vertex) (x point))
        (= (hv-y vertex) (y point))))
 
-
 (defun check-subhole (sh)
-  ;(assert (equalp '(:leftmost :bottom) (hv-classify (sh-start sh))))
+  (fff " check subhole ~s: @ ~s~%" sh (p (sh-start sh)))
+  (fff "    fc = ~s ~a~%" (p (sh-falling-corner-p sh))
+    (when (sh-falling-corner-p sh)
+      (list (p (dll-prev (sh-falling-corner-p sh)))
+            (p (dll-next (sh-falling-corner-p sh))))))
+  (fff "    top = :~%")
+  (loop for d across (f-d (sh-top sh))
+        for h across (f-h (sh-top sh))
+        for g across (f-gaps (sh-top sh))
+        do (fff "     ~s -> ~s @ ~s~%"
+             (pp d) (pp h) g))
+  (fff "    bottom = :~%")
+  (loop for d across (f-d (sh-bottom sh))
+        for h across (f-h (sh-bottom sh))
+        do (fff "     ~s -> ~s~%"
+             (pp d) (pp h)))
+
+  ;;(assert (equalp '(:leftmost :bottom) (hv-classify (sh-start sh))))
   (assert (eql (hv-sh (sh-start sh)) sh))
   (assert (vp= (sh-start sh) (aref (f-d (sh-bottom sh)) 0)))
   (assert (vp= (sh-start sh) (aref (f-d (sh-top sh)) 0)))
@@ -835,8 +1228,7 @@
     ;; components of top/bottom edges must have same length
     (assert (= (length (f-d (sh-top sh)))
                (length (f-h (sh-top sh)))
-               (length (f-gap (sh-top sh)))
-               (length (f-gap-y (sh-top sh)))))
+               (length (f-gaps (sh-top sh)))))
     (assert (= (length (f-d (sh-bottom sh)))
                (length (f-h (sh-bottom sh)))))
 
@@ -847,32 +1239,37 @@
             with l = (length (f-d top))
             for d across (f-d top)
             for h across (f-h top)
-            for g across (f-gap top)
-            for gy across (f-gap-y top)
+            for g across (f-gaps top)
             for i from 0
             ;; all segments are vertical
             do (assert (= (x d) (x h)))
                ;; f-d is always lower y value than f-h
                (assert (> (y h) (y d)))
                ;; all edges line up with previous, and go up except
-               ;; last 1 or 2 which go down
-               (assert (if (or
-                            ;; last 2 edges of falling-corner-p hole go down
-                            (and (sh-falling-corner-p sh)
-                                 (>= i (- l 2)))
-                            ;; otherwise only last edge goes down
-                            (>= i (1- l)))
-                           (= (y h) (shiftf py (y d)))
-                           (= (y d) (shiftf py (y h)))))
+               ;; last 1 or 2 which go down (if we have more than 1)
+               (when (> l 1)
+                 (assert (if (or
+                              ;; last 2 edges of falling-corner-p hole go down
+                              (and (sh-falling-corner-p sh)
+                                   (>= i (- l 2)))
+                              ;; otherwise only last edge goes down
+                              (>= i (1- l)))
+                             (= (y h) (shiftf py (y d)))
+                             (= (y d) (shiftf py (y h))))))
                ;; all edges are right of previous edges
                (assert (> (x d) px))
                (setf px (x d))
-               ;; gap should be less than distance between d and h if set
                (when g
-                 (assert (< g (- (y h) (y d))))
-                 (assert gy)
-                 (assert (<= (y d) gy (y h)))
-                 (assert (<= (+ gy g) (y h))))
+                 (loop for ((y gh) (y2)) on g
+                       do ;; gaps can at most reach top of edge
+                          (assert (<= (+ y gh) (y h)))
+                          ;; and must start above bottom
+                          (assert (> y (y d)))
+                       while y2
+                       do ;; gaps must be in increasing y order
+                         (assert (< y y2))
+                         ;; gaps can't touch
+                         (assert (< (+ y gh) y2))))
                ;; update bounds
                (setf x1 (min x1 (x d) (x h)))
                (setf x2 (max x2 (x d) (x h)))
@@ -880,8 +1277,7 @@
                (setf y2 (max y2 (y d) (y h)))))
     (let ((bottom (sh-bottom sh)))
       ;; gap should never be set
-      (every 'null (f-gap bottom))
-      (every 'null (f-gap-y bottom))
+      (every 'null (f-gaps bottom))
       (loop with px = most-negative-fixnum
             for d0 = nil then d
             for h0 = nil then h
@@ -910,16 +1306,89 @@
     ;; check bounding box, make sure end is inside bounds
     (assert (= (sh-max-width sh) (- x2 x1)))
     (assert (= (sh-max-height sh) (- y2 y1)))
+    #++
     (assert (<= x1 (sh-end sh) x2))))
 
+(defun check-hole (h)
+  (let ((points (make-hash-table :test 'equalp))
+        (subholes1 (make-hash-table))
+        (subholes2 (make-hash-table)))
+    (do-dll/next (v (h-vertices h))
+      ;; valid linked list
+      (assert (eql (dll-prev (dll-next v)) v))
+      (assert (eql (dll-next (dll-prev v)) v))
+      ;; no duplicated points
+      (let ((xy (list (hv-x v) (hv-y v))))
+        7(assert (not (gethash xy points)))
+        (setf (gethash xy points) v))
+      ;; vertices should be classified ;; todo: verify correct
+      (assert (and (hv-classify v) (hv-corner v)))
+      (assert (not (eql (hv-corner v) :right-notch)))
+      ;; check Q vertices
+      (when (hv-q v)
+        ;; top of left notch
+        (assert (eql (hv-classify v) :left-notch))
+        (assert (eql (hv-corner v) :top))
+        ;; link to both N and W
+        (assert (hv-n v))
+        (assert (hv-w v))
+        ;; link back to subhole
+        (assert (hv-sh v))
+        ;; subhole is in hole
+        (assert (eql (sh-hole (hv-sh v)) h)))
+      ;; QN,QW links are bidirectional, and are to or from a Q node
+      (when (hv-n v)
+        (assert (or (hv-q v) (hv-q (hv-n v))))
+        (assert (eql (hv-n (hv-n v)) v)))
+      (when (hv-w v)
+        (assert (or (hv-q v) (hv-q (hv-w v))))
+        (assert (eql (hv-w (hv-w v)) v)))
+      (when (hv-sh v)
+        ;; must be either start (bottom of leftmost edge) or end (Q or
+        ;; bottom of rightmost edge)
+        (cond
+          ((eql (hv-classify v) :leftmost)
+           (assert (eql (hv-corner v) :bottom)))
+          ((eql (hv-classify v) :rightmost)
+           (assert (eql (hv-corner v) :bottom)))
+          ;; might also be bottom of a falling edge, if entire subhole is
+          ;; blocked by falling edge
+          ((eql (hv-classify v) :falling-edge)
+           (assert (eql (hv-corner v) :bottom)))
+          ((hv-q v)
+           (assert (eql (hv-classify v) :left-notch))
+           (assert (eql (hv-corner v) :top)))
+          (t
+           (error "got hv-sh link on ~s ~s point?"
+                  (hv-classify v) (hv-corner v))))
+        ;; count vertices linking to each subhole
+        (incf (gethash (hv-sh v) subholes1 0) 1)))
+    (assert (h-subholes h))
+    (do-dll/next (sh (h-subholes h))
+      (assert (eql (dll-prev (dll-next sh)) sh))
+      (assert (eql (dll-next (dll-prev sh)) sh))
+      (assert (eql (sh-hole sh) h))
+      ;; not looping incorrectly
+      (assert (not (gethash sh subholes2)))
+      (setf (gethash sh subholes2) t)
+      (check-subhole sh))
+    (loop for k being the hash-keys of subholes1 using (hash-value v)
+          ;; exactly 2 vertices link to each subhole (start,end)
+          do (assert (= v 2))
+             ;; and they link to subhole in this hole
+             (assert (gethash k subholes2)))
+    (loop for k being the hash-keys of subholes2
+          do ;; every subhole in hole was subhole for some vertices
+             (assert (gethash k subholes1)))))
+
 (defun -x (p d)
-  (make-point (- (x p) d) (y p)))
+  (make-point (- (x p) d) (y p) :ref (ref p)))
 (defun +x (p d)
-  (make-point (+ (x p) d) (y p)))
+  (make-point (+ (x p) d) (y p) :ref (ref p)))
 (defun -y (p d)
-  (make-point (x p) (- (y p) d)))
+  (make-point (x p) (- (y p) d) :ref (ref p)))
 (defun +y (p d)
-  (make-point (x p) (+ (y p) d)))
+  (make-point (x p) (+ (y p) d) :ref (ref p)))
 
 (defun <=x (p1 p2)
   (<= (x p1) (x p2)))
@@ -932,10 +1401,18 @@
 
 (defun make-c (fb l end)
   ;;generate C given FB and width L of b1b2 (procedure BOTTOM etc)
+  #++
+  (when (or (< (length (f-h fb)) 2)
+            (< (length (f-d fb)) 2))
+    (return-from make-c nil))
   (flet ((h (x)
            (aref (f-h fb) x))
          (d (x)
            (aref (f-d fb) x)))
+    (ffc "make c: ~s~%"
+      (loop for i below (length (f-h fb))
+            collect (list (pp (d i)) (pp (h i))
+                          :b (point-bottom-left-p (d i)))))
     (let* ((q (make-deq))
            (b1 (-x (d 0) l))
            (b2 (d 0))
@@ -944,69 +1421,131 @@
            (support (if (= (y b1) (y (d 1)))
                         (d 1)
                         (h 1))))
-      (labels ((setup (start end)
+      (labels ((pp (p)
+                 (when p
+                   (list (x p) (y p))))
+               (setup (start end)
+                 (ffc "setup ~s - ~s / ~s~%" start end m)
+                 (loop for i from end downto start
+                       do (ffc "  ~s: ~s - ~s~%" i
+                            (pp (d i)) (pp (h i))))
                  (let ((q (make-deq)))
                    (loop
-                     for i from (- end 1) downto start
-                      when (or (deq-empty-p q)
-                              (<=y (first (top1 q))
-                                   (d i)))
+                     for i from (- end 1)
+                     downto start
+                     for p0 = (if (point-bottom-left-p (d i))
+                                  (d i)
+                                  (h i))
+                     do (ffc " setup test ~s / ~s ~s ~s~%"
+                          (mapcar #'pp (top1 q))
+                          (pp (d i))
+                          (pp (h i))
+                          (point-bottom-left-p (d i)))
+                     when (or (deq-empty-p q)
+                              (<y (first (top1 q))
+                                  p0))
                        do (let* ((p1 (if (and (= (1+ i) end)
-                                              (not (point-bottom-left-p (d end))))
+                                              (not (point-bottom-left-p
+                                                    (d end))))
                                          (d (1+ i))
                                          (h (1+ i))))
-                                 (p0 (make-point (x (d i))
-                                                 (y p1)
+                                 (p0 (make-point (x p0)
+                                                 (y p0)
                                                  :ref (or (ref (d i))
                                                           (ref p1)))))
+                            (ffc " setup add ~s ~s~%"
+                              (pp p0) (pp p1))
                             (push1 (list p0 p1)
                                    q)))
                    q))
+
                (mergeq (q1)
+                 (ffc "mergeq~%")
                  (when (not (deq-empty-p q1))
                    (destructuring-bind (sl sr) (top1 q1)
                      (assert (= (y sl) (y sr)))
                      (loop while (not (deq-empty-p q))
                            for (ql qr) = (top2 q)
                            do (assert (= (y ql) (y qr)))
-                           while (<y ql sl)
-                           do (pop2 q))))
+                           while (<=y ql sl)
+                           do (ffc " mergeq pop2 ~s~%" (mapcar #'pp (top2 q)))
+                              (pop2 q))))
                  (loop for x = (top1 q1)
                        until (deq-empty-p q1)
-                       do (push2 x q)
+                       do (ffc " mergeq push2 ~s~%" (mapcar #'pp x))
+                          (push2 x q)
                           (pop1 q1)))
                (slide (start)
-                  (loop named outer
+                 (loop named outer
                        for hit = nil
                        for i = start
                        while (< start m)
                        do ;; slide on support
-                          (loop ;; ready to fall
-                                when (>= (x (h i))
+                          (ffc "slide ~s,~s / ~s,~s~%"
+                            (x (h i)) (y (h i))
+                            (x support)
+                            (y support))
+                          (loop
+                            do (ffc " ~s @@ l~s  sup~s | di~s hi~s~%"
+                                 i l
+                                 (pp support)
+                                 (pp (d i))
+                                 (pp (h i)))
+                               (ffc "    c = ~s~%"
+                                 (mapcar 'pp (reverse c)))
+                               ;; hit a new support (rising edge
+                               ;; strictly between support and support+l)
+                            when (and (< (x support)
+                                         (x (h i))
                                          (+ (x support) l))
-                                  do (setf hit :drop)
-                                  and return nil
+                                      ;; at same height
+                                      (= (y (h i)) (y support))
+                                      ;; with a falling edge after it
+                                      (< (1+ i) m)
+                                      (= (y (h i)) (y (h (1+ i))))
+                                      (point-bottom-left-p (d (1+ i))))
+                              do (setf support (h (1+ i)))
+                                 (ffp "    new support ~s,~s~%"
+                                   (x support) (y support))
+                                 (setf start i)
+                                 ;; ready to fall
+                            when (and
+                                  (< (y (d i))
+                                     (y support))
+                                  (>= (x (h i))
+                                      (+ (x support) l)))
+                              do (setf hit :drop)
+                                 (ffc "    drop ~s~%" (+ (x support) l))
+                              and return nil
 
-                                ;; hit a new support
-                                when (and (= (y (h i)) (y support))
-                                          (/= (x (h i))
-                                              (x support)))
-                                  do (setf support (h i))
+                            ;; hit hidi
+                            when (> (y (h i)) (y b2))
+                              do (setf hit :raise)
+                                 (ffc "    raise ~%")
+                              and return nil
 
-                                     ;; hit hidi
-                                when (> (y (h i)) (y b2))
-                                  do (setf hit :raise)
-                                  and return nil
-
-                                do (incf i)
-
-                                when (>= i m)
-                                  return nil)
+                            do (incf i)
+                            when (>= i m)
+                              do (ffc "    done1 ~%")
+                            when (>= i m)
+                              return nil)
                           (ecase hit
                             ((nil)
                              ;; i = m, done
                              (assert (>= i (1- m)))
-                             (pop c)
+                             (cond
+                               ((< (x (car c))
+                                   (- (x (h (1- m))) l))
+                                (let* ((i (1- m))
+                                       (u (make-point (- (x (h i)) l)
+                                                      (y b1))))
+                                  (ffc "   done, finish span ~s - ~s~%"
+                                    (pp (car c))
+                                    (pp u))
+                                  (push u c)))
+                               (t
+                                (ffc "  done, drop ~s~%" (pp (car c)))
+                                (pop c)))
                              (loop-finish))
                             (:raise
                              (let ((u (make-point (- (x (h i)) l)
@@ -1029,11 +1568,15 @@
                                                  (y b1)
                                                  :ref (or (ref (d (1+ i)))
                                                           (ref b1))))
-                               (setf start (1+ i))))
+                               (setf start (1+ i))
+                               (ffc "raised:~%")
+                               (ffc "  = ~s~%" (mapcar 'pp (reverse c)))
+                               (ffc "~%")))
                             (:drop
                              ;; ready to fall
                              (setf b1 support)
                              (setf b2 (+x b1 l))
+                             (ffc "drop add ~s~%" (pp b1))
                              (push (make-point-open (x b1) (y b1) :ref (ref b1))
                                    c)
                              (let ((q1 (setup start i)))
@@ -1041,18 +1584,41 @@
                                ;; q is list of lists of horizontal segments
                                (destructuring-bind (lk rk) (top1 q)
                                  (pop1 q)
-                                 (let ((dy (- (y b1) (y lk))))
-                                   (setf b1 (-y b1 dy)
-                                         b2 (-y b2 dy))
-                                   (push (make-point-bottom-left
-                                          (x b1) (y b1) :ref (ref b1))
-                                         c)
-                                   (setf start i)
-                                   (setf support rk))))))))
+                                 (ffc "  b1:~s, k~s,~s l~s~%" (pp b1) (pp lk) (pp rk) l)
+                                 (cond
+                                   ((and (= (y lk) (y b1))
+                                         (< (x lk)
+                                            (+ (x b1) l)))
+                                    ;; spanned gap, just continue
+                                    ;; previous placement
+                                    (ffc " drop remove ~s~%" (pp (car c)))
+                                    (setf support rk)
+                                    (setf start i)
+                                    (pop c))
+                                   (t
+
+                                    (ffc "top = ~s - ~s~%" (pp lk) (pp rk))
+                                    (let ((dy (- (y b1) (y lk))))
+                                      (setf b1 (-y b1 dy)
+                                            b2 (-y b2 dy))
+                                      (ffc "drop add2 ~s~%" (pp b1))
+                                      (push (make-point-bottom-left
+                                             (x b1) (y b1) :ref (ref b1))
+                                            c)
+                                      (setf start i)
+                                      (setf support rk))))))
+                             (ffc "dropped:~%")
+                             (ffc "  = ~s" (mapcar 'pp (reverse c)))
+                             (ffc "~%")))))
                (trim ()
                  (assert (evenp (length c)))
+                 (ffc "trim@~s ~s~%"
+                   end
+                   (mapcar #'pp c))
                  (loop for (p1 p2) on c by #'cddr
-                       ;; only keep spans that are in proper order
+                       when (> (x p2) end)
+                         do (setf (x p2) end)
+                            ;; only keep spans that are in proper order
                        when (and (>= (x p2) (x p1))
                                  ;; and extend past beginning of subhole
                                  (>= (x p2) (x (h 0)))
@@ -1066,25 +1632,46 @@
                                       (x (h 0)) (y p1) :ref (or (ref (h 0))
                                                                 (ref p1)))
                                      p1)
-                         and collect p2)))
+                         and collect (if (= (x p2) end)
+                                         ;; if point is at end of subhole,
+                                         ;; it can't support a placement
+                                         (change-class p2 'point-open)
+                                         p2))))
+        (ffc "start placing ~s / ~s~%" l end)
         (slide 1)
         (setf c (nreverse c))
-        (coerce (trim)'vector)))))
+        (let ((c (coerce (trim) 'vector)))
+          (ffd " c == ~s~%" (map 'list 'pp c))
+          c)))))
 
 (defun make-d (ft l end falling)
   (declare (ignorable end falling))
-  ;; generate D given FT and width L of b3b4 (procedure TOP)
+  ;; generate D given FT and width L of t1t2 (procedure TOP)
+  (ffd "~&make d l:~s end:~s fall:~s ~s~%" l end falling ft)
+  (ffd "  ~s~%"
+    (loop for d across (f-d ft)
+          for h across (f-h ft)
+          for g across (f-gaps ft)
+          when g
+            collect (list (pp d) (pp h) g)
+          else collect (list (pp d) (pp h))))
   (let ((p (1- (length (f-d ft)))))
     (flet ((h (x)
              (aref (f-h ft) x))
            (d (x)
              (aref (f-d ft) x))
            (g (x)
-             (aref (f-gap ft) x))
-           (gy (x)
-             (aref (f-gap-y ft) x)))
+             (aref (f-gaps ft) x)))
       (assert (= (length (f-d ft)) (length (f-h ft))))
+      ;; doesn't fit at all
+      (when (> (+ (x (d 0)) l)
+               (x (d p)))
+        (ffd "  doesn't fit1~%")
+        (return-from make-d #()))
+
+      ;; no falling edge, just return the horizontal edges of FT
       (unless falling
+        (ffd "  not falling~%")
         (return-from make-d
           ;; this goes a bit past what is needed, since it doesn't check
           ;; right edge, but placement will be limited by lower edge
@@ -1094,130 +1681,206 @@
                                   collect (d i)
                                 collect (make-point-gap (x (h i))
                                                         (y (h i))
-                                                        (g i)
-                                                        (gy i))))))
+                                                        (g i))))))
             (coerce a 'vector))))
-      (let ((d (list (h 0)))
-            (p (1- (length (f-h ft)))))
-        (when (> (+ (x (d 0)) l)
-                 (x (d p)))
-          (return-from make-d #()))
 
-        (loop with p-1 = (1- p)
-              with dp-1 = (d p-1)
-              with dp = (d p)
-              with hp = (h p)
-              for n from 1 below p
-              for dn = (d n)
-              for hn = (h n)
-              for gap = (g n)
-              if (= n p-1)
-                ;; if we reached p-1, previous span exactly fits in
-                ;; gap, so need to make it shorter, and add span under
-                ;; falling edge
-                do (let* ((u (make-point (- (x dp-1) l) (y dn)))
-                          (v (make-point-open (x u) (y dp-1)))
-                          (prev (car d)))
-                     (assert (= (x u) (x (-x hn l))))
-
-                     (cond
-                       ;; possibly give up on current span
-                       ((> (+ (x prev) l) (x dn))
-                        (pop d))
-                       ;; or complete it
-                       (t
-                        (let ((p (make-point (- (x dn) l)
-                                             (y prev))))
-                          (push p d))))
-
-                     (push v d)
-                     (push (h p) d)
-                     (loop-finish))
-              if (<= (+ (x dn) l)
-                     (if (>= (y dp-1) (y dn))
-                         (x dp)
-                         (x dp-1)))
-                ;; next span fits, finish previous span and start next
-                do (push dn d)
-                 (if gap
-                     (push (make-point-gap (x hn) (y hn) gap (gy n)) d)
-                     (push hn d))
-
-              else
-                if (> (+ (x dn) l)
-                      (x dp))
-                  ;; hit end, no more spans fit
-                  do (cond
-                       ;; possibly give up on current span
-                       ((> (+ (x (car d)) l) (x dp))
-                        (pop d))
-                       ;; or complete it
-                       (t
-                        (let ((p (make-point (- (x dp) l)
-                                             (y (car d)))))
-                          (push p d))))
-                  and return nil
-              else
-                if (< (y dp-1) (y dn))
-                  ;; fig 12a: we've hit falling edge, and it is lower
-                  ;; than current span
-                  do (let* ((u (make-point (max (x dn)
-                                                (- (x dp-1) l))
-                                           (y dn)))
-                            (v (make-point-open (x u) (y dp-1))))
-                       (assert (>= (x u) (x dn)))
-                       (push u d)
-                       (push v d)
-                       (push (h p) d)
-                       (loop-finish))
-              else
-                if (= (y dp-1) (y dn))
-                  ;; we span the gap between this span and falling edge
-                  do (let ((u (make-point (x dp) (y dn))))
-                       (push u d)
-                       (loop-finish))
-              if (> (+ (x dn) l) (x dp-1))
-                ;; fig 12b: falling edge is above this span, but blocks
-                ;; any intervening spans. find vertical edge left of
-                ;; falling edge and add last span, if it fits
-                do (cond
-                     ((> (+ (x (car d)) l)
-                         (if (>= (y dp-1) (y (car d)))
-                             (x dp)
-                             (x dp-1)))
-                      (pop d))
-                     (t
-                      (push (d (1+ n)) d)))
-                   ;; find vertical edge left of falling edge
-                   (loop while (and (< n p-1)
-                                    (< (y (d (1+ n)))
-                                       (y dp-1)))
-                         do (incf n))
-                   (setf dn (d n))
-                   (setf hn (h n))
-                 (when (<= (+ (x dn) l)
-                           (x dp))
-                   (let ((u (if (>= (x dn) (- (x dp-1) l))
-                                (if (g n)
-                                    (let* ((g1 (gy n))
-                                           (g2 (+ g1 gap))
-                                           (fy (y dp-1)))
-                                      (make-point-gap (x dn) fy
-                                                      (if (< fy g1)
-                                                          nil
-                                                          (- (min g2 fy)
-                                                             g1))
-                                                      (gy n)))
-                                    (make-point (x dn) (y dp-1)))
-                                (make-point-open (- (x dp-1) l)
-                                                 (y dp-1)))))
-                     (push u d)
-                     (push hp d)))
-                 (loop-finish))
-        (let ((v (coerce (nreverse d) 'vector)))
-          (unless (zerop (mod (length v) 2))
-            (break "~s?~s" (length v) v))
-          v)))))
+      ;; falling edge, walk FT and add places where L fits
+      (let* ((d nil)
+             (p0 0)
+             (x0 (x (h 0)))
+             (y0 (y (h 0)))
+             (p-1 (1- p))
+             (dp-1 (d p-1))
+             (xp-1 (x (d p-1)))
+             (yp-1 (y (d p-1)))
+             (dp (d p))
+             (xp (x dp))
+             (fe-left (when (and (< (y (d 0)) yp-1 (y (h 0))))
+                        0)))
+        (flet ((make-point* (n &key open (y (y (h n))) xmax)
+                 (cond
+                   ((and open fe-left (<= (- xp-1 l)
+                                          (x (h fe-left))))
+                    (ffd "  open, fel=~s (~s)~%" fe-left
+                      (g fe-left))
+                    (if (g fe-left)
+                        ;; todo: trim gaps to height of falling edge?
+                        (make-point-gap (x (h fe-left)) y (g fe-left))
+                        (make-point (x (h fe-left)) y)))
+                   ((and open)
+                    (ffd "  open, fel=~s~%" fe-left)
+                    (make-point-open (- xp-1 l) y))
+                   ((g n)
+                    (make-point-gap (if xmax
+                                        (min xmax (x (h n)))
+                                        (x (h n)))
+                                    y (g n)))
+                   (t
+                    (make-point (if xmax
+                                    (min xmax (x (h n)))
+                                    (x (h n)))
+                                y)))))
+          ;; L exactly fits in width of subhole, add 0-length
+          ;; placement under lower of first edge and falling edge
+          (cond
+            ((= (+ (x (d 0)) l)
+                (x dp))
+             (let ((y (min (y (h 0)) yp-1)))
+               (ffd "  exact-fit1 @ ~s~%" y)
+               #++(break "~s" y)
+               (setf d (vector (make-point* 0 :y y)
+                               (make-point* p :y y)))))
+            ;; handle case where there are no rising edges so the loop
+            ;; doesn't need to care about it
+            ((= p-1 1)
+             (ffd "  no rising~%")
+             (cond
+               ;; fits before falling edge, add 2 spans
+               ((<= (+ x0 l) xp-1)
+                (ffd "   fits before~%")
+                (setf d (vector (make-point* 0)
+                                (make-point (- xp-1 l) y0)
+                                (make-point* xp-1 :y yp-1 :open t)
+                                (make-point-open (- (x (h p)) 0) yp-1))))
+               ;; spans gap, add 1 span
+               ((and (> (+ x0 l) xp-1)
+                     (= y0 yp-1))
+                (ffd "   spans~%")
+                (setf d (vector (make-point* 0)
+                                (make-point (- (x (h p)) 0) yp-1))))
+               ;; doesn't fit, add 1 span under falling edge
+               (t
+                (ffd "   spans~%")
+                (setf d (vector (make-point* 0 :y yp-1)
+                                (make-point (- (x (h p)) 0) yp-1))))))
+            ;; general case, loop over rising edges until we reach
+            ;; falling edge
+            (t
+             (loop for n from 1 below p
+                   for gap = (g n)
+                   do (ffd " ~s/~s, n=~s,~s |p-1=~s,~s | ~s | fel ~s~%"
+                        n p-1
+                        (pp (d n)) (pp (h n))
+                        (pp dp-1) (pp (h p-1))
+                        gap fe-left)
+                      (when (and (< (y (d n)) yp-1 (y (h n))))
+                        (assert (not fe-left))
+                        (ffd "  fe-left = ~s~%" n)
+                        (setf fe-left n))
+                      (cond
+                        ;; l fits exactly between this edge and
+                        ;; falling edge, or it fits and next edge is
+                        ;; falling edge. add span ending at this
+                        ;; point, span at next point, and span below
+                        ;; falling edge, and return
+                        ((or (and (= (+ (x (h n)) l) xp-1)
+                                  (> (y (h n)) yp-1))
+                             (and (= (1+ n) p-1)
+                                  (< (+ (x (h n)) l) xp-1)))
+                         (ffd "   exact fit2 or end~%")
+                         ;; span ending here
+                         (push (make-point* p0) d)
+                         (push (d n) d)
+                         ;; (possibly 0-length) span between here and
+                         ;; falling edge
+                         (push (make-point* n) d)
+                         (push (make-point (- xp-1 l) (y (h n)))
+                               d)
+                         ;; span below falling edge
+                         (push (make-point* n :y yp-1 :open t)
+                               d)
+                         ;; (ends at dp since bottom edge will limit it)
+                         (push (make-point* p :y yp-1) d)
+                         (loop-finish))
+                        ;; l fits between end of this edge and falling
+                        ;; edge with space left over. add span ending
+                        ;; at current point, and continue at next
+                        ;; point
+                        ((< (+ (x (h n)) l) xp-1)
+                         (ffd "   fits~%")
+                         (push (make-point* p0) d)
+                         (push (d n) d)
+                         (setf p0 n))
+                        ;; L fits under falling edge, and falling edge
+                        ;; is higher than next span. add span ending
+                        ;; at current point and continue at next point
+                        ((and (>= (+ (x (h n)) l) xp-1)
+                              (<= (+ (x (h n)) l) xp)
+                              (< (y (d n)) (y dp-1))
+                              (<= (y (h n)) (y dp-1))
+                              (/= (1+ n) p-1))
+                         (ffd "   fits below~%")
+                         (push (make-point* p0) d)
+                         (push (d n) d)
+                         (setf p0 n))
+                        ;; l spans gap between this edge and falling edge
+                        ;; with same value, add span that extends to
+                        ;; falling edge and return
+                        ((and (> (+ (x (h n)) l) xp-1)
+                              (= (y (d n)) (y dp-1)))
+                         (ffd "   spans2~%")
+                         ;; span ending here
+                         (push (make-point* p0) d)
+                         ;; (ends at dp since bottom edge will limit it)
+                         (push (make-point* p :y yp-1) d)
+                         (loop-finish))
+                        ;; l extends below falling edge, add span ending
+                        ;; at this point, and span below falling edge if
+                        ;; it fits
+                        ((and (> (+ (x (h n)) l) xp-1)
+                              (< (y (d n)) (y dp-1)))
+                         (ffd "   ends below~%")
+                         ;; span ending here
+                         (assert (<= (+ (x (h p0)) l) (x dp)))
+                         (push (make-point* p0) d)
+                         (if (= (+ (x (h p0)) l)
+                                (x (h p)))
+                             (push (make-point* p :y (y (d n)))
+                                   d)
+                             (push (make-point* n :y (y (d n))
+                                                  :xmax (- (x dp) l))
+                                   d))
+                         (when (<= (+ (x (d n)) l) (x (d p)))
+                           (ffd "    to end~%")
+                           ;; span below falling edge
+                           (push (make-point* n :y yp-1 :open t)
+                                 d)
+                           ;; (ends at dp since bottom edge will limit it)
+                           (push (make-point* p :y yp-1) d))
+                         (loop-finish))
+                        ;; l hits left side of falling edge, add span
+                        ;; ending at (- falling-edge l) if it fits, and
+                        ;; add span under falling edge and return
+                        ((and (> (+ (x (h n)) l) xp-1)
+                              (> (y (d n))
+                                 (y dp-1)))
+                         (ffd "   ends at (p (<= ~s ~s) ~s) (open (>= ~s ~s) = ~s)~%"
+                           (+ (x (d p0)) l) xp-1
+                           (<= (+ (x (d p0)) l) xp-1)
+                           (+ (x (d n)) l) xp-1
+                           (>= (+ (x (d n)) l) xp-1))
+                         ;; span that would have ended here
+                         (when (<= (+ (x (d p0)) l) xp-1)
+                           (ffd "   partial ~s~%" (pp (h p0))
+                             (list (- xp-1 l) (y (h p0))))
+                           (push (make-point* p0) d)
+                           (push (make-point (- xp-1 l) (y (h p0))) d))
+                         (ffd "   below~%")
+                         ;; span below falling edge
+                         (push (make-point* n :y yp-1 :open t)
+                               d)
+                         ;; (ends at dp since bottom edge will limit it)
+                         (push (make-point* p :y yp-1) d)
+                         (loop-finish)))))))
+        (if (listp d)
+            (let ((v (coerce (nreverse d) 'vector)))
+              (unless (zerop (mod (length v) 2))
+                (break "~s?~s" (length v) v))
+              (ffd " d = ~s~%" (map 'list 'pp v))
+              v)
+            (progn
+              (ffd " d = ~s~%" (map 'list 'pp d))
+              d))))))
 
 
 ;; this might hold large data live, so change-class to rect before
@@ -1225,7 +1888,11 @@
 (defclass placement (rect)
   ;; internal stuff to speed up incremental updates, etc
   ((hole-point :reader hole-point :initarg :point)
-   (hole :Reader hole :initarg :hole)))
+   (hole :Reader hole :initarg :hole)
+   (quick-contact :accessor quick-contact :initform nil)
+   (full-contact :accessor full-contact :initform nil)
+   (penalty-multiplier :accessor penalty-multiplier :initform 1)
+   (overlap :accessor overlap :initform nil)))
 
 (defun placing (w h c d hole)
   (declare (type vector c d))
@@ -1235,6 +1902,7 @@
     (when (or (< m 0) (< p 0))
       ;; C or D is empty, nothing fits
       (return-from placing nil))
+    (ffp "~&placing ~s,~s~%" w h)
     (labels ((l (x) (aref c (* x 2)))
              (r (x) (aref c (1+ (* x 2))))
              (ref-point (x)
@@ -1245,28 +1913,61 @@
              (rr (x) (aref d (1+ (* x 2))))
              ;; return true if H fits between l' and l at specified indices
              (ok (j i)
-               (>= (- (y (ll j)) (y (l i)))
-                   h))
+               (ffp "ok? (>= (- ~s ~s) ~s) = ~s~%"
+                 (y (ll j)) (y (l i)) h
+                 (>= (- (y (ll j)) (y (l i)))
+                     h))
+               (ffp "  @ ~s,~s: ~s,~s-~s,~s |  ~s,~s-~s,~s~%"
+                 i j
+                 (x (l i)) (y (l i)) (x (r i)) (y (r i))
+                 (x (ll j)) (y (ll j)) (x (rr j)) (y (rr j)))
+               (and (>= (- (y (ll j)) (y (l i)))
+                        h)))
              (falling (j i x)
                (declare (ignore j))
+               (ffp "  falling ~s ~s, ~s ~s~%"
+                 (point-open-p (l i))
+                 (list x (pp (l i)))
+                 (point-open-p (r i))
+                 (list x (pp (r i))))
                ;; true if we are exactly at a point-open point on C
                (or (and (point-open-p (l i))
                         (= x (x (l i))))
                    (and (point-open-p (r i))
                         (= x (x (r i))))))
              (sliding (j i x)
+               (ffp " sliding? ~s : ~s, ~s | ~s(g~s,o~s),~s~%"
+                 x (pp (l i)) (pp (r i))
+                 (pp (ll j))
+                 (point-gap-p (ll j))
+                 (point-open-p (ll j))
+                 (pp (rr j)))
+               (ffp "   y ~s~%"
+                 (list
+                  (= x (x (ll j)))
+                  (or (not (point-gap-p (ll j)))
+                      (not (gaps (ll j))))
+                  ;; fixme: set falling edge as 'open' or store
+                  ;; Y value for all edges in D?
+                  (not (point-open-p (ll j)))
+                  (> (+ (y (l i)) h)
+                     ;; use height of previous edge, should be
+                     ;; right with way D is generated? maybe
+                     ;; store in gap-y instead?
+                     (y (rr (max 0 (1- j)))))))
                ;; true if placement doesn't have any support to left
                (cond
                  ;; placed at bottom-left point on C, has support
                  ((and (= x (x (l i)))
                        (point-bottom-left-p (l i)))
+                  (ffp "not sliding 1~%")
                   nil)
                  ;; at left edge of span at top, no gap. Need to
                  ;; make sure placement extends past bottom of top
                  ;; edge
                  ((and (= x (x (ll j)))
                        (or (not (point-gap-p (ll j)))
-                           (not (gap (ll j))))
+                           (not (gaps (ll j))))
                        ;; fixme: set falling edge as 'open' or store
                        ;; Y value for all edges in D?
                        (not (point-open-p (ll j)))
@@ -1275,21 +1976,51 @@
                           ;; right with way D is generated? maybe
                           ;; store in gap-y instead?
                           (y (rr (max 0 (1- j))))))
+                  (ffp "not sliding 2~%")
                   nil)
                  ;; at left edge of span at top, and there is a gap,
                  ;; check gap for support
                  ((and (= x (x (ll j)))
                        (typep (ll j) 'point-gap)
-                       (gap (ll j)))
-                  (let* ((p (ll j))
-                         (gy1 (gap-y p))
-                         (gy2 (+ gy1 (gap p)))
+                       (gaps (ll j)))
+                  (let* ((gap (gaps (ll j)))
                          (y1 (y (l i)))
-                         (y2 (+ y1 h)))
-                    (or (and (< gy1 y1)
-                             (<=  y2 gy2))
-                        (< y2 gy1))))
+                         (y2 (+ y1 h))
+                         (ph (- y2 y1)))
+                    (ffp "maybe sliding ~s, ~s~%"
+                      (+ (y (l i)) h)
+                      (y (rr (max 0 (1- j)))))
+                    (if (<= (+ (y (l i)) h)
+                            (y (rr (max 0 (1- j)))))
+                        ;; fits entirely below edge
+                        t
+                        ;; check gaps
+                        (loop for (y h) in gap
+                              ;; if placement fits in gap, we can't place
+                              ;; here
+                              when (and (<= ph h)
+                                        (<= y y1 y2 (+ y h)))
+                                return t
+                              ;; otherwise, if gap overlaps placement, top
+                              ;; or bottom is supported, so we can place
+                              ;; here
+                              when (< y1 y y2)
+                                return nil
+                              ;; otherwise, check remaining gaps, and if
+                              ;; none returned T, we can place here
+                              finally (return nil))))
+                  #++(let* ((p (ll j))
+                            (gy1 (gap-y p))
+                            (gy2 (+ gy1 (gap p)))
+                            (y1 (y (l i)))
+                            (y2 (+ y1 h)))
+                       (ffp "sliding1? = ~s~%"
+                         (<= gy1 y1 y2 gy2))
+                       (ffp "p=~s,~s gy1=~s,gy2=~s, y1=~s,y2=~s~%"
+                         (x p) (y p) gy1 gy2 y1 y2)
+                       (<= gy1 y1 y2 gy2)))
                  (t
+                  #++(break "sliding?~%")
                   ;; otherwise, assume no support? (shouldn't happen?)
                   t))))
       (declare (ignorable #'r #'rr))
@@ -1309,22 +2040,43 @@
              (when (and (ok j i)
                         (not (falling j i x))
                         (not (sliding j i x)))
+               (unless (dll-next (ref-point i))
+                 (break "?~s" (ref-point i)))
+               (ffp "add placement, ref = ~s = ~s (next ~s)~%"
+                 (p (ref-point i)) (ref-point i)
+                 (dll-next (ref-point i)))
                (push (make-instance 'placement
                                     :x x :y (y (l i))
                                     :w w :h h :point (ref-point i)
                                     :hole hole)
                      e)
+               #++(when (= (hv-x (ref-point i)) 16)
+                    (break "~s" (p (ref-point i))))
+               (ffp "+++ place @ ~s,~s (ref ~s)~%" x (y (l i))
+                 (p (ref-point i)))
                ;; can't place anything else on this bottom span
                (setf placed t)))
         when (> i m)
           return nil
         do ;; advance top or bottom to next candidate
+           (ffp "@@ ~s/~s,~s/~s: ~s,~s-~s,~s ~s,~s-~s,~s~%"
+             i m j p
+             (x (l i)) (y (l i))
+             (x (r i)) (y (r i))
+             (x (ll j)) (y (ll j))
+             (x (rr j)) (y (rr j)))
            (cond
              ((or placed
                   (and (< (x (r i))
                           (x (rr j)))
                        (< i m))
                   (< (x (r i)) (x (ll j))))
+              (ffp "increment i ~s, (< ~s ~s) (< ~s ~s) (< ~s ~s)~%"
+                placed
+                (x (r i))
+                (x (rr j))
+                i m
+                (x (r i)) (x (ll j)))
               (incf i))
              ((and (= (x (rr j))
                       (x (r i)))
@@ -1341,22 +2093,48 @@
                 ;; increment i if it is falling
                 ((< (y (l (1+ i)))
                     (y (r i)))
+                 (ffp "increment i falling~%")
                  (incf i))
                 ;; increment j if it is rising
                 ((< (y (rr j))
                     (y (ll (1+ j))))
+                 (ffp "increment j rising~%")
                  (incf j))
                 ;; otherwise, increment whichever of i,j rises less
                 ((< (- (y (l (1+ i))) (y (r i)))
                     (- (y (ll (1+ j))) (y (rr j))))
+                 (ffp "increment i smaller~%")
                  (incf i))
                 (t
+                 (ffp "increment j smaller~%")
                  (incf j))))
              (t
+              (ffp "increment j~%")
               (incf j)
               (when (and (<= j p)
                          (< (x (r i)) (x (ll j))))
+                (ffp "increment i~%")
                 (incf i))))
+           (loop
+             while (and (< j p)
+                        (<= i m)
+                        (< (x (rr j))
+                           (x (l i))))
+             do (ffp "increment j (< ~s ~s) (< ~s ~s)~%"
+                  (x (rr j))
+                  (x (l i))
+                  j p)
+                (incf j))
+           (loop
+             while (and (< i m)
+                        (<= j p)
+                        (< (x (r i))
+                           (x (ll j))))
+             do (ffp "increment i (< ~s ~s) (< ~s ~s)~%"
+                  (x (l i))
+                  (x (rr j))
+                  i m)
+                (incf i))
            (setf placed nil)
         while (and (<= i m) (<= j p))))
     (nreverse e)))
@@ -1433,16 +2211,22 @@
           (t (break "??"))))
       (and hit-bottom hit-left))))
 
+(defun valid-placement-p* (i)
+  (valid-placement-p (hole i) (w i) (h i) (x i) (y i)))
+
 (defun find-all-placements/sh (subhole w h hole)
   (let ((r nil))
+    (ffp "~&~%~%@@@@@@ place ~s,~s in hole ~s~%" w h hole)
     (do-dll/next (n subhole)
       (when (and (<= w (sh-max-width n))
                  (<= h (sh-max-height n)))
+        (ffp "@@@ place in subhole ~s-~s = ~s~%"
+          (p (sh-start n)) (p (sh-endv n)) n)
         (let ((d (make-d (sh-top n) w (sh-end n) (sh-falling-corner-p n))))
           (when (plusp (length d))
-            (let ((c (make-c (sh-bottom n) w (sh-end n))))
-              (setf r (append (placing w h c d hole)
-                              r)))))))
+            (let* ((c (make-c (sh-bottom n) w (sh-end n)))
+                   (p (placing w h c d hole)))
+              (setf r (append p r)))))))
     r))
 
 (defun find-all-placements (hole w h)
@@ -1461,8 +2245,7 @@
    (y2 :initarg :y2 :accessor y2)
    ;; list of keywords indicating how span touches quad (or that it is
    ;; a gap between contacts). see intersect-hole-with-quad for values
-   (classify :initarg :classify :accessor classify)
-))
+   (classify :initarg :classify :accessor classify)))
 
 ;; some methods so we don't need to check types as often
 (defmethod a ((p placement-span)) nil)
@@ -1470,6 +2253,10 @@
 (defmethod start ((p placement-span)) nil)
 (defmethod end ((p placement-span)) nil)
 (defmethod overlap-length ((p placement-span)) 0)
+
+;; just for checking types more easily
+(defclass gap-span (placement-span)
+  ())
 
 (defclass overlap-span (placement-span)
   ;; properties of intersection of a hole and a target placement quad,
@@ -1500,6 +2287,19 @@
 
 (defun p (v)
   (when v (list (hv-x v) (hv-y v))))
+(defun pp (v)
+  (when v
+    (etypecase v
+      (point-gap
+       (list (x v) (y v) :g (gaps v)))
+      (point-open
+       (list (x v) (y v) :o))
+      (point-bottom-left
+       (list (x v) (y v) :b))
+      (t
+       (if (eql (type-of v) 'point)
+           (list (x v) (y v))
+           (list (x v) (y v) (type-of v)))))))
 
 (defun overlap-p (span v1)
   (let* ((v2 (dll-next v1))
@@ -1511,8 +2311,8 @@
          (xmax (max x1 x2))
          (ymin (min y1 y2))
          (ymax (max y1 y2)))
-    (format t "  check span ~s,~s - ~s,~s | edge ~s - ~s~%"
-            x1 y1 x2 y2 (p v1) (p v2))
+    (fff "  check span ~s,~s - ~s,~s | edge ~s - ~s~%"
+      x1 y1 x2 y2 (p v1) (p v2))
     (let ((r
             (cond
               ;; edge and span start at same point, and are co-linear
@@ -1527,22 +2327,28 @@
                    (and (= y1 y2 (hv-y v1) (hv-y v2))
                         (< xmin (hv-x v1) xmax)))
                :start)
-              ;; edge ends at span
-              ((or (and (= x1 x2 (hv-x v2))
-                        (<= ymin (hv-y v1) ymax))
-                   (and (= y1 y2 (hv-y v2))
-                        (<= xmin (hv-x v1) xmax)))
-               :to)
               ;; edge ends somewhere in span, and is co-linear
               ((or (and (= x1 x2 (hv-x v1) (hv-x v2))
                         (<= ymin (hv-y v2) ymax))
                    (and (= y1 y2 (hv-y v1) (hv-y v2))
                         (<= xmin (hv-x v2) xmax)))
                :end)
-              ;; doesn't intersect
+              ;; edge extends past span on both ends, and is co-linear
+              ((let ((xmin (min (hv-x v1) (hv-x v2)))
+                     (xmax (max (hv-x v1) (hv-x v2)))
+                     (ymin (min (hv-y v1) (hv-y v2)))
+                     (ymax (max (hv-y v1) (hv-y v2))))
+                 (or (and (= x1 x2 (hv-x v1) (hv-x v2))
+                          (or (<= ymin y1 ymax)
+                              (<= ymin y2 ymax)))
+                     (and (= y1 y2 (hv-y v1) (hv-y v2))
+                          (or (<= xmin x1 xmax)
+                              (<= xmin x2 xmax)))))
+               :end)
+              ;; doesn't intersect, or only intersects at start/end point
               (t
                nil))))
-      (format t "   = ~s~%" r)
+      (fff "   = ~s~%" r)
       r)))
 
 (defun calculate-overlap (span v1)
@@ -1560,80 +2366,77 @@
                  (* (- y1 y2)
                     (- x3 x4)))))
 
-    (format t "  calculate span ~s,~s - ~s,~s | edge ~s - ~s~%"
-            x1 y1 x2 y2 (p v1) (p v2))
+    (fff "  calculate span ~s,~s - ~s,~s | edge ~s - ~s @ ~s~%"
+      x1 y1 x2 y2 (p v1) (p v2) den)
     (labels ((d (y y1 y2)
                (/ (- y y1)
-                  (- y1 y2)))
+                  (- y2 y1)))
              (parallel (x1 y1 x2 y2 x3 y3 x4 y4)
                ;; written for vertical lines (x1=x2=x3=x4), called with
                ;; x,y swapped for horizontal
                (when (= x1)
-                (let ((symin (min y1 y2))
-                      (symax (max y1 y2))
-                      (vymin (min y3 y4))
-                      (vymax (max y3 y4)))
-                  (let ((start (= y1 y3)) ;; both start at same point
-                        (end (= y2 y4))   ;; both end at same point
-                        ;; edge starts in span
-                        (mid-start (< symin y3 symax))
-                        ;; edge ends in span
-                        (mid-end (< symin y4 symax))
-                        ;; span starts inside edge
-                        (overlap-start (< vymin y1 vymax))
-                        ;; span ends inside edge
-                        (overlap-end (< vymin y2 vymax)))
-                    (cond
-                      ;; edge and span coincide exactly
-                      ((and start end)
-                       (values :exact 0.0 1.0 x1 y1 x2 y2))
-                      ;; edge and span start at same point, edge ends first
-                      ((and start mid-end)
-                       (values :start-middle 0 (d y2 y3 y4)
-                               x1 y1 x3 y3))
-                      ;; edge and span start at same point, span ends first
-                      ((and start overlap-end)
-                       (values :after-exact 0 (d y2 y3 y4)
-                               x1 y1 x2 y2))
-                      ;; edge starts in middle of span, both end at same point
-                      ((and mid-start end)
-                       (values :middle-end (d y1 y3 y4) 1
-                               x3 y3 x2 y2))
-                      ;; edge starts before span, both end at same point
-                      ((and overlap-start end)
-                       (values :before-exact (d y1 y3 y4) 1
-                               x1 y1 x2 y2))
-                      ;; edge extends past edge on both sides
-                      ((and overlap-start overlap-end)
-                       (values :spans
-                               (d y1 y3 y4)
-                               (d y2 y3 y4)
-                               x1 y1 x2 y2))
+                 (let ((symin (min y1 y2))
+                       (symax (max y1 y2))
+                       (vymin (min y3 y4))
+                       (vymax (max y3 y4)))
+                   (let ((start (= y1 y3)) ;; both start at same point
+                         (end (= y2 y4))   ;; both end at same point
+                         ;; one starts at end of other
+                         ;;(to-start (= y1 y4))
+                         ;;(from-end (= y2 y3))
+                         ;; edge starts in span
+                         (mid-start (< symin y3 symax))
+                         ;; edge ends in span
+                         (mid-end (< symin y4 symax))
+                         ;; span starts inside edge
+                         (overlap-start (< vymin y1 vymax))
+                         ;; span ends inside edge
+                         (overlap-end (< vymin y2 vymax)))
+                     (cond
+                       ;; edge and span coincide exactly
+                       ((and start end)
+                        (values :exact 0.0 1.0 x1 y1 x2 y2))
+                       ;; edge and span start at same point, edge ends first
+                       ((and start mid-end)
+                        (values :start-middle 0 (d y2 y3 y4)
+                                x1 y1 x4 y4))
+                       ;; edge and span start at same point, span ends first
+                       ((and start overlap-end)
+                        (values :after-exact 0 (d y2 y3 y4)
+                                x1 y1 x2 y2))
+                       ;; edge starts in middle of span, both end at same point
+                       ((and mid-start end)
+                        (values :middle-end (d y1 y3 y4) 1
+                                x3 y3 x2 y2))
+                       ;; edge starts before span, both end at same point
+                       ((and overlap-start end)
+                        (values :before-exact (d y1 y3 y4) 1
+                                x1 y1 x2 y2))
+                       ;; edge extends past edge on both sides
+                       ((and overlap-start overlap-end)
+                        (values :spans
+                                (d y1 y3 y4)
+                                (d y2 y3 y4)
+                                x1 y1 x2 y2))
 
-                      ;; edge starts before span, stops in middle
-                      ((and overlap-start mid-end)
-                       (values :before
-                               (d y1 y3 y4)
-                               (d y2 y3 y4)
-                               x1 y1 x2 y2))
-                      ;; edge starts in middle of span, ends after end
-                      ((and mid-start overlap-end)
-                       (values :after
-                               (d y1 y3 y4)
-                               (d y2 y3 y4)
-                               x1 y1 x2 y2))
-                      (start
-                       (values :from 0 0 x3 y3 x3 y3))
-                      (mid-start
-                       (break "shouldn't happen?"))
-                      (end
-                       (values :to-exact 1 1 x4 y4 x4 y4))
-                      (mid-end
-                       (values :to 1 1 x4 y4 x4 y4))
-                      (t
-                       (break "start=~s, end=~s~%mid-start=~s, mid-end=~s~%~
-                              overlap-start=~s, overlap-end=~s,"
-                              start end mid-start mid-end overlap-start overlap-end))))))))
+                       ;; edge starts before span, stops in middle
+                       ((and overlap-start mid-end)
+                        (values :before
+                                (d y1 y3 y4)
+                                (d y2 y3 y4)
+                                x1 y1 x4 y4))
+                       ;; edge starts in middle of span, ends after end
+                       ((and mid-start overlap-end)
+                        (values :after
+                                (d y1 y3 y4)
+                                (d y2 y3 y4)
+                                x3 y3 x2 y2))
+                       ;; edge starts and ends within span
+                       ((and mid-start mid-end)
+                        (values :middle 0 1 x3 y3 x4 y4))
+                       (t
+                        ;; disjoint segments, or only start/end intersects
+                        nil)))))))
       (cond
         ((and (zerop den) (= x1 x2 x3 x4))
          ;;lines are parallel and vertical
@@ -1643,50 +2446,364 @@
          ;;with axes swapped
          (multiple-value-bind (type d1 d2 x1 y1 x2 y2)
              (parallel y1 x1 y2 x2 y3 x3 y4 x4)
-           (values type d1 d2 y1 x1 y2 x2))
-         )
+           (values type d1 d2 y1 x1 y2 x2)))
         ((zerop den)
          ;; lines are parallel and not on same line
-         nil
-         )
-        ((= x1 x2)
-         ;; span is horizontal, check ends of line for intersection
-         (cond
-           ((and (= x3 x1) (<= y1 y3 y2))
-            ;; edge starts on segment
-            (values :to 0.0 0.0 x3 y3 x3 y3)
-            )
-           ((and (= x4 x1) (<= y1 y4 y2))
-            ;; edge ends on segment
-            (values :to 1.0 1.0 x4 y4 x4 y4)
-            )))
-        ((= y1 y2)
-         (cond
-           ((and (= y3 y1) (<= x1 x3 x2))
-            ;; edge starts on segment
-            (values :to 0.0 0.0 x3 y3 x3 y3)
-            )
-           ((and (= y4 y1) (<= x1 x4 x2))
-            ;; edge ends on segment
-            (values :to 1.0 1.0 x4 y4 x4 y4)
-            ))
-
-         )
+         nil)
+        ((or (= x1 x2) (= y1 y2))
+         ;; perpendicular lines, at most endpoints intersect
+         nil)
         (t
-         (break "?"))
+         (break "?"))))))
 
-      
+(defun intersect-hole-with-quad (placement)
+  ;; calculates intersection of placement with hole used to create
+  ;; placement, returned as a dll of placement and overlap spans, and
+  ;; total length of contact
+  (let* ((len 0)
+         (spans nil)
+         (lastx nil)
+         (lasty nil)
+         (last-edge nil)
+         (first-edge nil)
+         (px1 (x placement))
+         (py1 (y placement))
+         (px2 (+ px1 (w placement)))
+         (py2 (+ py1 (h placement)))
+         (v1 (hole-point placement))
+         (hole (hole placement))
+         (passed-corner nil))
+    (ffi "intersect @ ~s,~s - ~s,~s~%" px1 py1 px2 py2)
+    (labels ((add-span (span)
+               (ffi " add span ~s,~s ~s,~s (~s, ~s)~%"
+                 (x1 span) (y1 span) (x2 span) (y2 span)
+                 (p (a span)) (p (b span)))
+               ;; must be horizontal or vertical or 0-length
+               (assert (or (= (x1 span) (x2 span))
+                           (= (y1 span) (y2 span))))
+               (insert-after spans span)
+               (setf spans span)
+               (do-dll/next (s spans)
+                 (ffi "   ~s : ~s ~s,~s ~s,~s~%"
+                   s (classify s) (x1 s) (y1 s) (x2 s) (y2 s))))
 
-        ))
-    )
-  )
+             (add-gap (x y)
+               (ffi " add gap ~s ~s~%" x y)
+               (add-span (make-instance
+                          'gap-span
+                          :classify :gap
+                          :x1 lastx :y1 lasty
+                          :x2 x :y2 y)))
+             (add-overlap (v type d1 d2 x1 y1 x2 y2)
+               (ffi " add overlap ~s,~s ~s,~s (from ~s,~s) ~s~%" x1 y1 x2 y2
+                 lastx lasty
+                 type)
+               ;; add overlap of edge from (dll-prev v) to v
+               (let ((from (dll-prev v))
+                     (l (sqrt (+ (expt (- x2 x1) 2)
+                                 (expt (- y2 y1) 2)))))
+                 (incf len l)
+                 (cond
+                   ;; skipped some space, add a gap
+                   ((and lastx
+                         (or (not (= lastx x1))
+                             (not (= lasty y1))))
+                    (add-gap x1 y1))
+                   ;; normal span immediately after a corner, remove
+                   ;; the corner (probably a N/W node, and we only
+                   ;; care about corners if that is the only contact
+                   ;; point)
+                   ((and spans
+                         (eql (classify spans) :corner)
+                         (= x1 (x1 spans))
+                         (= y1 (y1 spans)))
+                    (ffi "  Remove extra corner @ ~s,~s ~s,~s~%"
+                      (x1 spans) (y1 spans) (x2 spans) (y2 spans))
+                    (delete-node (shiftf spans (dll-prev spans)))
+                    (unless (dll-next spans)
+                      (setf spans nil))))
+                 (add-span (make-instance
+                            'overlap-span
+                            :classify type
+                            :x1 x1 :y1 y1
+                            :x2 x2 :y2 y2
+                            :start d1 :end d2
+                            :a from :b v))
+                 (setf lastx x2)
+                 (setf lasty y2)))
+             (add-corner (x y)
+               (ffi " add corner ~s ~s (~s,~s)~%" x y lastx lasty)
+               (when (and lastx
+                          (or (not (= lastx x))
+                              (not (= lasty y)))
+                          (not
+                           (and (= x (x1 (dll-next spans)))
+                                (= y (y1 (dll-next spans))))))
+                 (add-gap x y)
+                 (setf lastx x
+                       lasty y)))
+             (add-corners (edge)
+               (ffi " add corners ~s -> ~s~%"
+                 last-edge edge)
+               (when (and last-edge (not (= edge last-edge)))
+                 (assert (<= 0 edge 3))
+                 (loop with x = (vector px2 px1 px1 px2)
+                       with y = (vector py1 py1 py2 py2)
+                       for i = (mod (1+ last-edge) 4) then (mod (1+ i) 4)
+                       do (add-corner (aref x i) (aref y i))
+                       while (/= i edge)))
+               (unless first-edge
+                 (setf first-edge edge))
+               (setf last-edge edge))
+             (d (y y1 y2)
+               (/ (- y y1)
+                  (- y2 y1)))
+             (contact (x1 y1 x2 y2 x3 y3 x4 y4)
+               ;; xy1,xy2 are 'span' of placement, xy3,xy4 are 'edge'
+               ;; from hole
+               (ffi " contact ~s,~s ~s,~s @ ~s,~s ~s,~s~%"
+                 x1 y1 x2 y2 x3 y3 x4 y4)
+               ;; written for vertical lines (x1=x2=x3=x4), called with
+               ;; x,y swapped for horizontal
+               (let ((symin (min y1 y2))
+                     (symax (max y1 y2))
+                     (vymin (min y3 y4))
+                     (vymax (max y3 y4)))
+                 (let ((start (= y1 y3)) ;; both start at same point
+                       (end (= y2 y4))   ;; both end at same point
+                       ;; one starts at end of other
+                       (to-start (= y1 y4))
+                       ;;(from-end (= y2 y3))
+                       ;; edge starts in span
+                       (mid-start (< symin y3 symax))
+                       ;; edge ends in span
+                       (mid-end (< symin y4 symax))
+                       ;; span starts inside edge
+                       (overlap-start (< vymin y1 vymax))
+                       ;; span ends inside edge
+                       (overlap-end (< vymin y2 vymax)))
+                   (ffi "  ~s ~s, ~s, ~s ~s, ~s ~s~%"
+                     start end to-start
+                     mid-start mid-end
+                     overlap-start overlap-end)
+                   (cond
+                     ;; edge and span coincide exactly
+                     ((and start end)
+                      (values :exact 0.0 1.0 x1 y1 x2 y2))
+                     ;; edge and span start at same point, edge ends first
+                     ((and start mid-end)
+                      (values :start-middle 0 (d y2 y3 y4)
+                              x1 y1 x4 y4))
+                     ;; edge and span start at same point, span ends first
+                     ((and start overlap-end)
+                      (values :after-exact 0 (d y2 y3 y4)
+                              x1 y1 x2 y2))
+                     ;; edge starts in middle of span, both end at same point
+                     ((and mid-start end)
+                      (values :middle-end (d y1 y3 y4) 1
+                              x3 y3 x2 y2))
+                     ;; edge starts before span, both end at same point
+                     ((and overlap-start end)
+                      (values :before-exact (d y1 y3 y4) 1
+                              x1 y1 x2 y2))
+                     ;; edge extends past edge on both sides
+                     ((and overlap-start overlap-end)
+                      (values :spans
+                              (d y1 y3 y4)
+                              (d y2 y3 y4)
+                              x1 y1 x2 y2))
+
+                     ;; edge starts before span, stops in middle
+                     ((and overlap-start mid-end)
+                      (values :before
+                              (d y1 y3 y4)
+                              (d y2 y3 y4)
+                              x1 y1 x4 y4))
+                     ;; edge starts in middle of span, ends after end
+                     ((and mid-start overlap-end)
+                      (values :after
+                              (d y1 y3 y4)
+                              (d y2 y3 y4)
+                              x3 y3 x2 y2))
+                     ;; edge starts and ends within span
+                     ((and mid-start mid-end)
+                      (values :middle 0 1 x3 y3 x4 y4))
+                     (to-start
+                      (values :corner 1 1 x1 y1 x1 y1))
+                     (t
+                      ;; disjoint segments, or only start/end intersects
+                      nil))))))
+
+      ;; search counterclockwise for a point right of placement
+      (do-dll/prev (v v1)
+        (ffi "-< ~s~%" (p v))
+        ;; either we went past it to the right, or followed rightmost
+        ;; edge past it vertically
+        (when (or (> (hv-x v) px2)
+                  (and (= (hv-x v) px2)
+                       (>= (hv-y v) py2)))
+          (setf v1 v)
+          (return nil))
+        ;;todo: follow n->Q and Q->W links where possible
+        )
+
+      ;; search for intersections clockwise from there
+      (do-hole-vertices/next (v v1 dx dy endp)
+        (ffi "@@ ~s, ~s ~s~%" (p v) dx dy)
+        (when (and dx dy) ;; ignore first point
+          (let* ((prev (dll-prev v))
+                 (x1 (hv-x prev))
+                 (y1 (hv-y prev))
+                 (x2 (hv-x v))
+                 (y2 (hv-y v)))
+            (ffi " ?? ~s,~s ~s,~s~%"
+              x1 y1 x2 y2)
+            (when (and (<= x1 px1) (<= y1 py1))
+              (setf passed-corner t))
+            (cond
+              ;; on same line as bottom edge
+              ((= y1 y2 py1)
+               (ffi "  bottom~%")
+               (multiple-value-bind (type d1 d2 cy1 cx1 cy2 cx2)
+                   (contact  py1 px2 py1 px1 y1 x1 y2 x2)
+                 (ffi "   type = ~s~%" type)
+                 (when type
+                   (add-corners 0)
+                   (add-overlap v type d1 d2 cx1 cy1 cx2 cy2))))
+              ;; on same line as left edge
+              ((= x1 x2 px1)
+               (ffi "  left~%")
+               (multiple-value-bind (type d1 d2 cx1 cy1 cx2 cy2)
+                   (contact px1 py1 px1 py2 x1 y1 x2 y2)
+                 (ffi "   type = ~s~%" type)
+                 (when type
+                   (add-corners 1)
+                   (add-overlap v type d1 d2 cx1 cy1 cx2 cy2))))
+              ;; on same line as top edge
+              ((= y1 y2 py2)
+               (ffi "  top~%")
+               (multiple-value-bind (type d1 d2 cy1 cx1 cy2 cx2)
+                   (contact py2 px1 py2 px2 y1 x1 y2 x2)
+                 (ffi "   type = ~s~%" type)
+                 (when type
+                   (add-corners 2)
+                   (add-overlap v type d1 d2 cx1 cy1 cx2 cy2))))
+              ;; on same line as right edge
+              ((= x1 x2 px2)
+               (ffi "  right~%")
+               (multiple-value-bind (type d1 d2 cx1 cy1 cx2 cy2)
+                   (contact px2 py2 px2 py1 x1 y1 x2 y2)
+                 (ffi "   type = ~s~%" type)
+                 (when type
+                   (add-corners 3)
+                   (add-overlap v type d1 d2 cx1 cy1 cx2 cy2))))
+              ((and (plusp dy) (> y2 py2) passed-corner)
+               (ffi "  skip top~%")
+               ;; once we go above top of box, only falling edge can drop
+               ;; down to touch it, so check that then stop
+               (let ((fc (h-falling-corner-p hole)))
+                 (ffi "fc @ ~s~%" (p fc))
+                 (when fc
+                   (assert (dll-next fc))
+
+                   (let* ((p (extend-edge-up fc 'dll-prev))
+                          (n (extend-edge-right fc 'dll-next)))
+                     #++
+                     (ffi "  @ ~s,~s - ~s,~s - ~s,~s~%"
+                       x1 y1 x2 y2 x3 y3)
+                     ;; check for bottom edge of falling corner
+                     ;; touching top of placement
+                     (loop
+                       with v = fc
+                       do
+                          (let ((x2 (hv-x v))
+                                (y2 (hv-y v))
+                                (x3 (hv-x (dll-next v)))
+                                (y3 (hv-y (dll-next v))))
+                            (when (= y2 y3 py2)
+                              (multiple-value-bind (type d1 d2 cy1 cx1 cy2 cx2)
+                                  (contact py2 px1
+                                           py2 px2
+                                           y2 x2
+                                           y3 x3)
+                                (when type
+                                  (add-corners 2)
+                                  (add-overlap (dll-next v)
+                                               type d1 d2 cx1 cy1 cx2 cy2))))
+                            (setf v (dll-next v)))
+                       until (eql v n))
+                     ;; check for left edge of falling corner touching
+
+                     ;; right side of placement, or corner contact
+                     (loop
+                       with once = nil
+                       do
+                          (let ((x1 (hv-x p))
+                                (y1 (hv-y p))
+                                (x2 (hv-x (dll-next p)))
+                                (y2 (hv-y (dll-next p))))
+                            (ffi "   ??? ~s ~s ~s~%" x1 x2 px2)
+                            (when (= x1 x2 px2)
+                              (multiple-value-bind (type d1 d2 cx1 cy1 cx2 cy2)
+                                  (contact px2 py2 px2 py1 x1 y1 x2 y2)
+                                (ffi "  contact2 ~s~%" type)
+                                (when type
+                                  (unless once
+                                    (add-corners 3)
+                                    (setf once t))
+                                  (add-overlap (dll-next p)
+                                               type d1 d2 cx1 cy1 cx2 cy2)))))
+                          (setf p (dll-next p))
+                       until (eql p fc)))))
+               (return nil))
+              ((and (plusp dx) (> x2 px2) passed-corner)
+               (ffi "  skip right~%")
+               ;; if we pass right edge of box, nothing to right can touch
+               ;; placement. If rightmost edge touched placement, we
+               ;; should have started from the top vertex of it, and will
+               ;; need to check for that separately
+               (return nil))
+              ;; todo: skip Q->N, W->Q when possible
+              )
+            (when endp
+              (ffi " endp~%")
+              ;; check final span, unless it is first node
+              (let ((x1 (hv-x v))
+                    (y1 (hv-y v))
+                    (x2 (hv-x (dll-next v)))
+                    (y2 (hv-y (dll-next v))))
+                (when (= y1 y2 py2)
+                  (multiple-value-bind (type d1 d2 cy1 cx1 cy2 cx2)
+                      (contact py2 px1 py2 px2 y1 x1 y2 x2)
+                    (ffi "  type = ~s~%" type)
+                    (when type
+                      (add-overlap (dll-next v) type d1 d2 cx1 cy1 cx2 cy2)
+                      (setf last-edge first-edge))))
+                (return nil))))))
+      (assert first-edge)
+      ;; add missing corners
+      (when (/= first-edge last-edge)
+        (ffi "final corners ~s -> ~s~%" last-edge first-edge)
+        (add-corners (mod first-edge 4)))
+      ;; and make sure shape is closed
+      (let ((n (dll-next spans)))
+        (when (or (/= (x2 spans) (x1 n))
+                  (/= (y2 spans) (y1 n)))
+          (ffi "close span~% ~s,~s - ~s,~s~% -> ~s,~s - ~s,~s~%"
+            (x1 spans) (y1 spans) (x2 spans) (y2 spans)
+            (x1 n) (y1 n) (x2 n) (y2 n))
+          (add-gap (x1 n) (y1 n)))))
+    (ffi"spans = ~s~%" spans)
+    (do-dll/next (s spans)
+      (ffi "~s : ~s ~s,~s ~s,~s~%"
+        s (classify s) (x1 s) (y1 s) (x2 s) (y2 s)))
 
 
-(defun intersect-hole-with-quad (hole placement)
-  ;; return spans of HOLE that overlap edges of quad defined by
-  ;; x,y,w,h, along with coordinates and length of overlap.
-  ;; also return total length of intersection as 2nd value, since
-  ;; it's easy to calculate, for use in placement heuristics
+    (values spans len)))
+#++
+(defun intersect-hole-with-quad (placement)
+  ;; calculates intersection of placement with hole used to create
+  ;; placement, returned as a dll of placement and overlap spans
 
   (let* ((len 0)
          (px1 (x placement))
@@ -1695,7 +2812,7 @@
          (py2 (+ py1 (h placement)))
          (v (hole-point placement))
          (bottom (make-instance 'placement-span :x1 px2 :y1 py1 :x2 px1 :y2 py1
-                                           :classify '(:gap :bottom)))
+                                                :classify '(:gap :bottom)))
          (r bottom))
     ;; we build intersection in CW order, so edges are in same
     ;; direction as edges from hole
@@ -1709,10 +2826,6 @@
      r (make-instance 'placement-span :x1 px2 :y1 py2 :x2 px2 :y2 py1
                                       :classify '(:gap :right)))
 
-
-    ;; possibly should just pass placement if it stores hole?
-    (assert (eql hole (hole placement)))
-
     ;; find beginning of overlap (possibly should save work here to
     ;; use in next steps, but not many edges in worst case, and don't
     ;; need to do full calculation here)
@@ -1724,37 +2837,35 @@
         ;; until it is right of placement, then walk forwards until we get
         ;; contact with bottom of placement.
         ((nil)
-         (format t "no contact @ ~s%" (p v))
+         (fff "no contact @ ~s%" (p v))
          ;; move ccw around hole past placement
-         (loop do (setf v (dll-prev v))
-               while (<= (hv-x v) px2)
-               do (format t "  -> ~s~%" (p v))
-               when (eql v (hole-point placement))
-                 do (break "couldn't find contact or point past placement?"))
+         (when (< (hv-x v) px2)
+           (loop with pass = nil
+                 until (or (> (hv-x v) px2)
+                           (and pass (>= (hv-y v) py2)))
+                 do (setf v (or (hv-w v) (dll-prev v)))
+                 do (fff "  -> ~s ~s~%" (p v) pass)
+                 when (<= px1 (hv-x v) px2)
+                   do (setf pass t)
+                 when (eql v (hole-point placement))
+                   do (break "couldn't find contact or point past placement?")))
          ;; then move CW until we find a contact with bottom, and
          ;; return it
          (loop for c = (overlap-p bottom v)
                for i from 0
-               do (format t " ~s <- ~s~%" c (p v))
+               do (fff " ~s <- ~s~%" c (p v))
                until c
                do (setf v (dll-next v))
-               when (> i 100) do (break "?"))
-         )
+               when (> i 100) do (break "?")))
         ;; hole edge starts before placement, and stops in middle of
         ;; bottom. can't continue around edge since then it would
         ;; have matched :start
         (:end
-
          )
         ;; hole edge starts in middle of bottom edge of placement,
         ;; back up to :to edge
         (:start
-         (setf v (dll-prev v))
-         (unless (eql :to (overlap-p bottom v))
-           (break "got ~s instead of :to contact?"
-                  (eql :to (overlap-p bottom v)))))
-
-
+         )
         ;; hole edge starts at lower right corner, so could continue
         ;; around the placement
         (:exact-start
@@ -1775,19 +2886,17 @@
                    (setf v (dll-prev v))
                    (loop-finish))
                   ((:end :to)
-                   (loop-finish))))))
-        (:to
-         ;;do nothing, we are at :to edge we wanted
-         )))
+                   (loop-finish))))))))
 
-    (format t "moved start points to ~s,~s~%" r v)
-    (format t "  h edge = ~s,~s -> ~s,~s~%"
-            (hv-x v) (hv-y v) (hv-x (dll-next v)) (hv-y (dll-next v)))
-    (format t "  p span = ~s,~s -> ~s,~s~%"
-            (x1 r) (y1 r) (x2 r) (y2 r))
-    (format t "  contact ?= ~s~%" (overlap-p r v))
-    (format t "  full contact = ~s~%"
-            (multiple-value-list (calculate-overlap r v)))
+    (fff "moved start points to ~s,~s~%" r v)
+    (fff "  h edge = ~s,~s -> ~s,~s~%"
+      (hv-x v) (hv-y v)
+      (hv-x (dll-next v)) (hv-y (dll-next v)))
+    (fff "  p span = ~s,~s -> ~s,~s~%"
+      (x1 r) (y1 r) (x2 r) (y2 r))
+    (fff "  contact ?= ~s~%" (overlap-p r v))
+    #++(fff "  full contact = ~s~%"
+         (multiple-value-list (calculate-overlap r v)))
 
 
 
@@ -1804,22 +2913,28 @@
              (sqrt (+ (expt (- a c) 2)
                       (expt (- b d) 2)))))
       (loop
-        with v1 = v
+                                        ;with v1 = v
         do (multiple-value-bind (type d1 d2 x1 y1 x2 y2)
                (calculate-overlap r v)
              (let ((edge (second (classify r)))
                    (next (dll-next v)))
+               (fff "  test edge ~s -> ~s~%" (p v) (p next))
+               (fff "     span ~s: ~s,~s -> ~s,~s~%"
+                 (classify r) (x1 r) (y1 r) (x2 r) (y2 r))
+               (fff "  == ~s: ~s ~s = ~s,~s - ~s,~s~%"
+                 type d1 d2 x1 y1 x2 y2)
+               (fff " type = ~s, classify = ~s~%"
+                 type (classify r))
                (when type
                  (let ((l (len x1 y1 x2 y2)))
                    (incf len l)
-                   (format t "test edge ~s -> ~s~%" (p v) (p next))
-                   (format t "     span ~s: ~s,~s -> ~s~s~%"
-                           (classify r) (x1 r) (y1 r) (x2 r) (y2 r))
-                   (format t "  == ~s: ~s ~s = ~s,~s - ~s,~s~%"
-                           type d1 d2 x1 y1 x2 y2)
                    (ecase type
                      ((:exact :before-exact :after-exact :spans)
-                      ;; entire span is covered by edge, replace it completely
+                      ;; entire span is covered by edge, replace it
+                      ;; completely
+                      (when (typep r 'overlap-span)
+                        (break "placing on overlap?"))
+                      (fff "@@ cover, change-class~%")
                       (change-class r 'overlap-span
                                     :start d1
                                     :end d2
@@ -1828,8 +2943,41 @@
                                     :b next
                                     :classify (list type edge)
                                     :x1 x1 :y1 y1
-                                    :x2 x2 :y2 y2))
-                     (:from
+                                    :x2 x2 :y2 y2)
+                      ;; if previous span is overlap, and doesn't
+                      ;; have same B as this span's A, add a gap
+                      ;; for the corner
+                      (let ((prev (dll-prev r)))
+                        (format t "check corner ~s -> ~s~%"
+                                prev r)
+                        (format t "= ~s,~s -> ~s,~s~% ~s,~s->~s,~s~%"
+                                (a prev) (b prev)
+                                (a r) (b r)
+                                (p (a prev)) (p (b prev))
+                                (p (a r)) (p (b r)))
+                        (when (and (typep prev 'overlap-span)
+                                   (not (eql (b prev) (a r))))
+                          (insert-before
+                           r
+                           (make-instance 'gap-span
+                                          :x1 x1 :y1 y1
+                                          :x2 x1 :y2 y1
+                                          :classify
+                                          (list :gap :corner
+                                                (cadr (classify prev))
+                                                (cadr (classify r)))))
+                          (fff "%% added corner @ ~s,~s ~s~%"
+                            x1 y1 (classify (dll-prev r)))))
+
+                      (if (eql :right (cadr (classify r)))
+                          (loop-finish)
+                          (setf r (dll-next r)))
+                                        ;(setf v (dll-next v))
+                                        ;(setf next (dll-next v))
+                      )
+                     (:middle
+                      (when (typep r 'overlap-span)
+                        (break "placing on overlap?"))
                       (let ((n (make-instance
                                 'overlap-span
                                 :start d1
@@ -1837,25 +2985,7 @@
                                 :length l
                                 :a v
                                 :b next
-                                :classify (list :from edge)
-                                :x1 x1 :y1 y1
-                                :x2 x2 :y2 y2)))
-                        ;; if both start at same point and diverge, we
-                        ;; need a contact at the corner, then continue
-                        ;; checking current span (shouldn't be able to
-                        ;; diverge in middle since we should have
-                        ;; already seen a contact along span and split
-                        ;; it
-                        (insert-before r n)))
-                     (:to
-                      (let ((n (make-instance
-                                'overlap-span
-                                :start d1
-                                :end d2
-                                :length l
-                                :a v
-                                :b next
-                                :classify (list :to edge)
+                                :classify (list type edge)
                                 :x1 x1 :y1 y1
                                 :x2 x2 :y2 y2))
                             ;; split the span into 2, with contact in
@@ -1864,727 +2994,1041 @@
                             (np (make-instance
                                  'placement-span
                                  :classify (classify r)
-                                 :x1 x1 :y1 y1
+                                 ;; keep start from old span so we
+                                 ;; can classify future overlaps
+                                 ;; correctly
+                                 :x1 (x1 r) :y1 (y1 r)
                                  :x2 (x2 r) :y2 (y2 r))))
+                        (fff "@@~s, insert-after, advance twice~%" type)
+                        ;; update previous gap type and endpoint
+                        (change-class r 'gap-span
+                                      ;; update endpoints of gap
+                                      :x1 (x2 (dll-prev r))
+                                      :y1 (y2 (dll-prev r))
+                                      :x2 x1
+                                      :y2 y1)
                         (setf (x2 r) x1
                               (y2 r) y1)
                         (insert-after r n)
+                        (fff " r = ~s,~s -> ~s,~s~%"
+                          (x1 r) (y1 r) (x2 r) (y2 r))
+                        (when (and (= (x1 r) (x2 r))
+                                   (= (y1 r) (y2 r)))
+                          ;; gap was 0-length, probably due to W/N point
+                          (delete-node (shiftf r (dll-next r))))
                         (insert-after n np)
-                        (setf r np))))))
-               (ecase edge
+                        (setf r np)))
+                     ((:before :start-middle)
+                      (when (typep r 'overlap-span)
+                        (break "placing on overlap?"))
+                      (let ((n (make-instance
+                                'overlap-span
+                                :start d1
+                                :end d2
+                                :length l
+                                :a v
+                                :b next
+                                :classify (list type edge)
+                                :x1 x1 :y1 y1
+                                :x2 x2 :y2 y2)))
+                        (fff "@@ :~s, insert-before, shrink~%" type)
+                        #++(setf (x1 r) x2
+                                 (y1 r) y2)
+                        (insert-before r n)))
+                     ((:after :middle-end)
+                      ;; starts in middle of span, and uses
+                      ;; remainder, split it in 2
+                      (when (typep r 'overlap-span)
+                        (break "placing on overlap?"))
+                      (let ((n (make-instance
+                                'overlap-span
+                                :start d1
+                                :end d2
+                                :length l
+                                :a v
+                                :b next
+                                :classify (list type edge)
+                                :x1 x1 :y1 y1
+                                :x2 x2 :y2 y2)))
+                        (fff "@@~s, insert-after, advance twice~%" type)
+                        (change-class r 'gap-span
+                                      ;; update endpoints of gap
+                                      :x1 (x2 (dll-prev r))
+                                      :y1 (y2 (dll-prev r))
+                                      :x2 x1
+                                      :y2 y1)
+                        (fff "  gap ~s,~s -> ~s,~s~a~%"
+                          (x1 r) (y1 r) (x2 r) (y2 r)
+                          (if (and (= (x1 r) (x2 r))
+                                   (= (y1 r) (y2 r)))
+                              "??????" ""))
+                        (fff "  ovr ~s,~s -> ~s,~s~%"
+                          (x1 n) (y1 n) (x2 n) (y2 n))
+                        (insert-after r n)
+                        (when (and (= (x1 r) (x2 r))
+                                   (= (y1 r) (y2 r)))
+                          ;; gap was 0-length, probably due to W/N point
+                          (delete-node (shiftf r (dll-next r))))
+                        (if (eql :right (cadr (classify r)))
+                            (loop-finish)
+                            (setf r (dll-next n))))
+                      #++(fff "@@ :~s, change-class" type)
+                      #++ (change-class r 'overlap-span
+                                        :start d1
+                                        :end d2
+                                        :length l
+                                        :a v
+                                        :b next
+                                        :classify (list type edge)
+                                        :x1 x1 :y1 y1
+                                        :x2 x2 :y2 y2)))))
+               (ecase (second (classify r))
                  (:bottom
-                  (format t "advance from bottom? ~s ~s ~s~%"
-                          (<= (hv-x next) px2)
-                          (> (hv-y v) py2)
-                          (> (hv-y next) py2))
-                  (when (or (<= (hv-x next) px2)
-                            (> (hv-y v) py2)
-                            (> (hv-y next) py2))
-                    (setf r (dll-next r)))
-                  (setf v next))
+                  (fff "advance from bottom? ~s ~s ~s~%"
+                    (<= (hv-x next) (x2 r))
+                    (> (hv-y v) py2)
+                    (> (hv-y next) py2))
+                  (cond
+                    ((or #++(and (<= (hv-x next) (x2 r)))
+                         (> (hv-y v) py1)
+                         (> (hv-y next) py1))
+                     (fff "  advance~%")
+                     (unless (typep r 'overlap-span)
+                       (fff "    gap~%")
+                       (change-class r 'gap-span))
+                     (setf r (dll-next r)))
+                    (t
+                     (setf v next))))
                  (:left
-                  (format t "advance from left? ~s | ~s ~s ~s~%"
-                          (> (hv-y next) py2)
-                          (>= (hv-y next) py2)
-                          (> (hv-x v) px2)
-                          (> (hv-x next) px2))
-                  (if (> (hv-y next) py2)
-                      ;; todo: can skip V directly to falling edge if hv-y2
-                      ;; is strictly greater than py2, since it won't go
-                      ;; lower until then (can touch top or right edge of
-                      ;; placement)
-                      (setf v next)
-                      (setf v next)
-                      )
-                  
-                  (when (or (> (hv-y next) py2)
-                            (> (hv-x v) px2)
-                            (> (hv-x next) px2))
-                    (setf r (dll-next r))))
+                  (fff "v = ~s, next = ~s~%" (p v) (p next))
+                  (fff "advance from left? ~s | ~s ~s ~s~%"
+                    (> (hv-y next) py2)
+                    nil                 ;(> (hv-y v) py2)
+                    (> (hv-x v) px1)
+                    nil
+                                        ;(> (hv-x next) px2)
+                    )
+
+                  (cond
+                    ((or (> (hv-y v) py2)
+                         (and (>= (hv-y v) py1)
+
+                              (> (hv-x next) px1)))
+                     (unless (typep r 'overlap-span)
+                       (change-class r 'gap-span))
+                     (setf r (dll-next r)))
+                    ((> (hv-y next) py2)
+                     ;; todo: can skip V directly to falling edge if hv-y2
+                     ;; is strictly greater than py2, since it won't go
+                     ;; lower until then (can touch top or right edge of
+                     ;; placement)
+                     (setf v next))
+                    (t
+                     (setf v next))))
                  (:top
                   ;; todo
+                  (fff "advance from top? ~s | ~s ~s~%"
+                    (> (hv-y next) py2)
+                    (>= (hv-x v) px2)
+                    (>= (hv-x next) px2))
                   (if (> (hv-y next) py2)
                       ;; todo: skip V directly to falling edge
                       (setf v next)
                       (setf v next))
-                  (when (or (> (hv-x v) px2)
-                            (> (hv-x next) px2))
+                  (when (or (>= (hv-x v) px2)
+                            (>= (hv-x next) px2))
+                    (unless (typep r 'overlap-span)
+                      (change-class r 'gap-span))
                     (setf r (dll-next r))))
                  (:right
+                  (fff "advance from right? ~s | ~s ~s~%"
+                    (> (hv-y next) py2)
+                    (< (hv-y v) py2)
+                    (< (hv-x v) px2))
+                  ;; todo: follow Q/W links if completely to right
+                  ;; of placement, or outside Y bounds of placement
                   (if (> (hv-y next) py2)
                       (setf v next)
                       (setf v next))
-                  )
-
-                 )))
-        until (eql v v1)))
+                  (when (or             ; (< (hv-y v) py1)
+                         (< (hv-x v) px2))
+                    (unless (typep r 'overlap-span)
+                      (change-class r 'gap-span))
+                    (fff "  done~%")
+                    (loop-finish))))))
+                                        ;until (eql v v1)
+                                        repeat 100))
 
     #++(break "r ~s~%" r)
     (values r len)))
 
+#++
 (let ((h (init-hole 8 8)))
-  (intersect-hole-with-quad h
-                            (make-instance 'placement
+  (intersect-hole-with-quad (make-instance 'placement
                                            :x 0 :y 0 :w 3 :h 4
                                            :point (h-vertices h)
                                            :hole h)))
 
 (defun remove-quad-from-hole (hole placement
-                              &key (overlap (intersect-hole-with-quad
-                                             hole placement)))
+                              &key (overlap
+                                    (or (overlap placement)
+                                        (intersect-hole-with-quad placement))))
   (assert (typep overlap 'placement-span))
-  (format t "remove quad: ~s,~s ~sx~s~%"
-          (x placement) (y placement)
-          (w placement) (h placement))
+  (setf hole (hole placement))
+  (fff "~&~%~%remove quad: ~s,~s ~sx~s~%"
+    (x placement) (y placement)
+    (w placement) (h placement))
 
   (let ((i 0))
     (do-dll/next (o overlap)
-      (format t "~s: ~s~%" i o)
-      (format t " ~s,~s - ~s,~s~%"
-              (x1 o) (y1 o) (x2 o) (y2 o))
+      (fff "~s: ~s : ~s~%" i o (classify o))
+      (fff " ~s,~s - ~s,~s~%"
+        (x1 o) (y1 o) (x2 o) (y2 o))
       (when (typep o 'overlap-span)
-        (format t "  ~s , ~s @ ~s, ~s~%" (a o) (b o) (start o) (end o))
-        (format t "  ~s,~s  ~s,~s~%"
-                (hv-x (a o)) (hv-y (a o))
-                (hv-x (b o)) (hv-y (b o))))
+        (fff "  ~s , ~s @ ~s, ~s~%" (a o) (b o) (start o) (end o))
+        (fff "  ~s,~s  ~s,~s~%"
+          (hv-x (a o)) (hv-y (a o))
+          (hv-x (b o)) (hv-y (b o))))
       (incf i)))
 
-  ;; find first non-gap span to simplify later logic
-  (let ((start nil))
-    (do-dll/next (v overlap)
-      (when (and (typep v 'overlap-span) (not start))
-        (setf start v)
-        (return nil)))
+  (fff ">>> start of removal:~%")
+  (flet ((print-hole (h)
+           (do-hole-vertices/next (v (h-vertices h) dx dy)
+             (fff "   ~s (~s / ~s) n:~s w:~s q:~s~a ~s ~s~%" (p v) dx dy
+               (p (hv-n v))
+               (p (hv-w v))
+               (hv-q v)
+               (if (and dx dy (not (zerop dx)) (not (zerop dy)))
+                   "  ????" "")
+               (hv-sh v)
+               (hv-classify v)))
+           (fff "  fc = ~s ~a~%" (p (h-falling-corner-p h))
+             (when (h-falling-corner-p h)
+               (list (p (dll-prev (h-falling-corner-p h)))
+                     (p (dll-next (h-falling-corner-p h))))))
+           (fff "  subholes:~%")
+           (when (h-subholes h)
+             (do-dll/next (sh (h-subholes h))
+               (fff "   ~s: start ~s, end ~s~%"
+                 sh (p (sh-start sh)) (p (sh-endv sh)))))))
+    (fff "  hole ~s~%" hole)
+    (fff "    ~s <-> ~s~%"
+      (dll-prev hole) (dll-next hole))
+    (print-hole hole))
+
+  ;; to remove a quad, we walk around the overlap list, collecting a
+  ;; pair of start/end points for each gap (and intermediate points),
+  ;; creating new points on the hole as needed for start or end
+  ;; points. Any points between 2 non-gap contacts (not including
+  ;; to/from) are removed (where a corner of placement is in a corner
+  ;; of hole, may be up to 4 in a row corresponding to all 4 corners
+  ;; of placement, in which case either there is a single span of gap
+  ;; in the middle of remaining side, or the hole was removed
+  ;; completely)
+
+  ;; once we have those sets, if we only have 1 gap, it is connected
+  ;; by a single (possibly angled) segment due to removal of inner
+  ;; contact points. walk backwards along list of intermediate points
+  ;; adding them between the start and end points.
+
+  ;; if we have multiple gaps, we swap start->prev of first gap with
+  ;; start->prev of next gap, repeating for subsequent gaps
+
+
+  ;; check for removing entire hole
+  (when (loop repeat 5 ;; 5 to make sure we notice any corner gaps
+              for i = overlap then (dll-next i)
+              always (eql :exact (classify i)))
+    (let ((r (dll-next hole)))
+      (fff "remove entire hole ~s (~s ~s)~%" hole (dll-next hole)
+        (dll-next (dll-next hole)))
+      (delete-node hole)
+      (fff " -> ~s~%" (dll-next hole))
+      (return-from remove-quad-from-hole
+        (dll-next r))))
+
+  ;; first find the start of a gap
+  (fff "find start of gap:~%")
+  (let ((start nil)
+        (o overlap))
+    (fff " @ ~s,~s - ~s,~s ~s : ~s~%" (x1 o) (y1 o) (x2 o) (y2 o) (classify o) o)
+
+    (if (typep overlap 'overlap-span)
+        (do-dll/next (v overlap)
+          (fff "  -> ~s,~s - ~s,~s ~s : ~s~%"
+            (x1 v) (y1 v) (x2 v) (y2 v) (classify v) v)
+          (when (and (typep v 'gap-span) (not start))
+            (setf start v)
+            (return nil)))
+        (do-dll/prev (v (dll-prev overlap))
+          (fff "  <- ~s,~s - ~s,~s ~s : ~s~%"
+            (x1 v) (y1 v) (x2 v) (y2 v) (classify v) v)
+          (when (typep v 'overlap-span)
+            (setf start (dll-next v))
+            (return nil))))
     (assert start)
-    (format t "move overlap from ~s to ~s~%" overlap start)
+    (fff "move overlap from ~s to ~s~%" overlap start)
+    (let ((v overlap))
+      (fff "  == ~s,~s - ~s,~s ~s : ~s~%"
+        (x1 v) (y1 v) (x2 v) (y2 v) (classify v) v))
     (setf overlap start))
-  (let (;; links that should be broken
-        (to-disconnect (make-hash-table))
-        ;; links that should be preserved or created, in specified
-        ;; directions
-        (connect-key<-value (make-hash-table))
-        (connect-key->value (make-hash-table))
-        ;; nodes that need updated in keys (disconnected or connected)
-        ;; (hash table to avoid duplicates efficiently)
-        (worklist (make-hash-table))
-        ;; subholes possibly affected by this placement (not
-        ;; exhaustive list, just those reachable from following
-        ;; vertices stopping at Q verts, from disconnected links)
+  ;; and back up 1 node so we can make sure the first point of the gap
+  ;; exists
+  (setf overlap (dll-prev overlap))
+
+  (let (;; subholes whose start or endv nodes were removed, or
+        ;; affected by a new edge
         (affected-subholes (make-hash-table))
-        (affected-q (make-hash-table))
-        ;; vertex under new or moved left notch (= possible new subhole)
-        (left-notch (make-hash-table))
-        ;; number of new gaps indicates # of holes in result: 0 =
-        ;; completely filled hole. 1 = filled part of hole without
-        ;; creating any new holes (may have created or removed
-        ;; subholes), N>1 = created N-1 holes
-        (new-gaps nil)
-
-        ;; vertices to be moves (or possibly combined with another)
-        (to-move (make-hash-table))
-        ;; any holes created by the placement (mostly for debugging
-        ;; currently)
+        ;; q nodes that were removed
+        (removed-q (make-hash-table))
+        ;; list of gaps, with any intermediate points that need to be
+        ;; added
+        (gaps nil)
+        ;; list of any new holes created
         (new-holes nil)
-        (first-point nil)
-        (move-q (make-hash-table)))
-    ;; walk through contacts deciding what needs done to vertices
-    (labels ((disconnect (n dir)
-               (format t "disconnect ~s ~s (= ~s~%~%" (p n) dir
-                       (if (eql :next dir)
-                           (p (dll-next n))
-                           (p (dll-prev n))))
-               (unless n (break "disconnect ~s ~s?" n dir))
-
-               (setf (gethash n worklist) t)
-
-               (if (and (gethash n to-disconnect)
-                        (not (eql dir (gethash n to-disconnect))))
-                   (setf (gethash n to-disconnect) t)
-                   (setf (gethash n to-disconnect) dir)))
-             (mark-affected (start)
-               (format t "mark affected from ~s~%" (p start))
-               (do-hole-vertices/next (v start dx nil)
-                 (format t "  check ~s~%" (p v))
-                 (when (hv-sh v)
-                   (format t "  affected subhole ~s (~s)~%" (hv-sh v)
-                           (p (sh-start (hv-sh v))))
-                   (setf (gethash (hv-sh v) affected-subholes) t)
-                   (return nil))
-                 (when (and dx (plusp dx))
-                   (return nil))
-                 (when (hv-w v)
-                   (if (< (hv-y v) (+ (y placement) (h placement)))
-                       (progn
-                         (format t "  affected q ~s~%" v)
-                         (break "check this")
-                         (setf (gethash v affected-q) t))
-                       (return nil)))))
-             (remove-node (n)
+        ;; vertices created or reconnected by placement, so we can
+        ;; update classify data
+        (classify-vertices (make-hash-table)))
+    (labels ((remove-node (n)
+               ;; if vertex was falling corner of hole, remove it
+               (when (eql n (h-falling-corner-p hole))
+                 (fff "***** remove fe ~s from ~s~%" (p n) hole)
+                 (setf (h-falling-corner-p hole) nil))
+               (when (gethash n classify-vertices)
+                 (remhash n classify-vertices))
                ;; if vertex was start or end of a subhole, we need
                ;; to update it
                (let ((sh (hv-sh n)))
-                 (format t "@@@ remove node ~s: ~s~%" (p n) sh)
+                 (fff "@@@ remove node ~s: ~s (~s ~s ~s)~%" (p n) sh
+                   (p (hv-w n)) (p (hv-n n)) (hv-q n))
                  (when sh
-                   (format t "  == ~s ~s~%" (p (sh-start sh))
-                           (p (sh-endv sh))))
+                   (fff "  == ~s ~s~%"
+                     (p (sh-start sh))
+                     (p (sh-endv sh))))
+                 (when (hv-q n)
+                   (setf (hv-n (hv-n n)) nil)
+                   (setf (hv-w (hv-w n)) nil)
+
+                   (setf (gethash n removed-q)
+                         (list sh (hv-w n) (hv-n n))))
                  (when sh
                    (cond
                      ((eql n (sh-start sh))
                       ;; save it for update later, since we need to
                       ;; search for new start, and might have
                       ;; deleted subhole completely
-                      (format t "  update subhole~%")
+                      (fff "  update subhole~%")
                       (setf (gethash sh affected-subholes) t))
-                     ((and (eql n (sh-endv sh)))
-                      (let ((p (dll-prev n)))
-                        (when (hv-w n)
-                          (setf (gethash n move-q) (list sh p)))
-                        (format t "adjust end ~s -> ~s~%~s -> ~s~%"
-                                (sh-endv sh) p
-                                (p (sh-endv sh)) (p p))
+                     ((eql n (sh-endv sh))
+                      ;; move Q nodes forwards, other nodes backwards
+                      (let ((p (if (hv-q n)
+                                   (dll-next n)
+                                   (dll-prev n))))
+                        (fff "adjust end ~s -> ~s~%~s -> ~s~%"
+                          (sh-endv sh) p
+                          (p (sh-endv sh)) (p p))
                         (setf (sh-endv sh) p)
+                        (setf (sh-end sh) (hv-x p))
                         (setf (hv-sh p) sh))))))
                (when (eql n (h-vertices hole))
                  (setf (h-vertices hole) (dll-prev n)))
                (delete-node n))
-             (add-or-update-left-notch (p)
-               (format t "possible new or updated left notch at ~s~%" (p p))
-               (setf (gethash p left-notch) t))
-             (p (w) (when w (list (hv-x w) (hv-y w))))
+             (mark-affected (start end)
+               (fff "mark affected from ~s / ~s~%" (p start) (p end))
+               (let ((sh nil))
+                 (do-hole-vertices/next (v start dx nil)
+                   (fff "  check ~s ~s ~s~%" (p v)
+                     (hv-classify v) (hv-corner v))
+                   (when (hv-sh v)
+                     (setf sh (hv-sh v))
+                     (fff "  affected subhole ~s (~s)~%" (hv-sh v)
+                       (p (sh-start (hv-sh v))))
+                     (setf (gethash (hv-sh v) affected-subholes) t)
+                     (return nil))
+                   (when (and dx (plusp dx))
+                     (return nil))
+                   (when (hv-q v)
+                     (if (< (hv-y v) (+ (y placement) (h placement)))
+                         (progn
+                           (fff "  affected q ~s~%" v)
+                           #++(break "check this")
+                           #++(setf (gethash v affected-q) t))
+                         (return nil))))
+                 (let ((leftp nil))
+                   (do-hole-vertices/prev (v (dll-prev start) dx nil)
+                     (fff "  check2 ~s ~s ~s~%" (p v)
+                       (hv-classify v) (hv-corner v))
+                     (when (hv-sh v)
+                       (fff "  affected subhole ~s (~s)~%" (hv-sh v)
+                         (p (sh-start (hv-sh v))))
+                       (setf (gethash (hv-sh v) affected-subholes) t)
+                       (return nil))
+                     (when (and dx (plusp dx) leftp)
+                       (return nil))
+                     (when (and dx (minusp dx))
+                       (setf leftp t))
+                     (when (hv-w v)
+                       (if (< (hv-y v) (+ (y placement) (h placement)))
+                           (progn
+                             (fff "  affected q ~s~%" v)
+                             #++(break "check this")
+                             #++(setf (gethash v affected-q) t))
+                           (return nil)))))))
              (print-hole (h)
                (do-hole-vertices/next (v (h-vertices h) dx dy)
-                 (format t "   ~s (~s / ~s) n:~s w:~s q:~s~%" (p v) dx dy
-                         (when (hv-n v) (p (hv-n v)))
-                         (when (hv-w v) (p (hv-w v)))
-                         (when (hv-q v) (p (hv-q v)))))
-               (format t "  subholes:~%")
-               (do-dll/next (sh (h-subholes h))
-                 (format t "   ~s: start ~s, end ~s~%"
-                         sh (p (sh-start sh)) (p (sh-endv sh))))
-               ))
-      (format t "~%~%remove ~s from hole:~%" (list (x placement)
-                                                   (y placement)
-                                                   (+ (x placement)
-                                                      (w placement))
-                                                   (+ (x placement)
-                                                      (h placement))))
-      (do-hole-vertices/next (v (h-vertices hole) dx dy)
-        (format t "  ~s (~s / ~s)~%" (p v) dx dy))
-      (format t "subholes:~%")
-      (do-dll/next (sh (h-subholes hole))
-        (format t "  ~s: start ~s, end ~s~%"
-                sh (p (sh-start sh)) (p (sh-endv sh))))
-      (let ((index -1)
-            (prev nil)
-            (first nil)
-            (in-gap nil))
-        (do-dll/next (i overlap end)
-          (format t "### ~s ~s (prev ~s~%~%"i end prev)
-          (incf index)
-          (let ((a (a i))
-                (b (b i))
-                (start (start i))
-                (end (end i))
-                (classify (car (classify i)))
-                (edge (cadr (classify i))))
-            (format t "~s: ~s ~s~% ~s .. ~s~% ~a~%"
-                    index classify edge
-                    start end
-                    (list a b)
-                    )
-            (flet ((todo (x)
-                     (break "~s: ~s ~s~% ~s .. ~s~% ~a ~a"
-                            x classify edge
-                            start end
-                            a b)
-                     )
-                   (start-or-continue-gap (a)
-                     (format t "start or continue gap ~s (was ~s)~%"
-                             (p a) (mapcar #'p in-gap))
-                     (push a in-gap))
-                   (end-gap (a)
-                     (format t "end gap at ~s (from ~s)~%"
-                             (p a) (mapcar #'p in-gap))
-                     (when in-gap
-                       (assert a))
-                     (when in-gap
-                       (push (list* a in-gap) new-gaps))
-                     (setf in-gap nil)))
-              (case classify
-                (:before-exact
-                 (let ((p (make-hole-vertex (x1 i) (y1 i))))
-                   (format t "add point1 ~s @ ~s - ~s~%"
-                           (p p) (p a) (p b))
-                   (unless first
-                     (setf first p))
-                   (insert-after a p)
-                   (setf prev nil)
-                   (disconnect p :next)
-                   (disconnect (dll-next p) :prev)
-                   (unless first-point
-                     (setf first-point p))
-                   (end-gap a)))
-                (:after-exact
-                 (let ((p (make-hole-vertex (x2 i) (y2 i))))
-                   (format t "add point2 ~s @ ~s, ~s~%"
-                           (p p) (p a) (p b))
-                   (unless first
-                     (setf first p))
-                   (insert-after a p)
-                   (mark-affected b)
-                   (setf prev p)
-                   (disconnect a :next)
-                   (disconnect p :prev)
-                   (end-gap a)))
-                (:exact
-                 ;(disconnect a :prev)
-                 (disconnect a :next)
-                 (disconnect b :prev)
-                 ;(disconnect b :next)
-                 (end-gap nil))
-                (:gap
-                 (assert prev)
+                 (fff "   ~s (~s / ~s) n:~s w:~s q:~s~a ~s ~s~%" (p v) dx dy
+                   (p (hv-n v))
+                   (p (hv-w v))
+                   (hv-q v)
+                   (if (and dx dy (not (zerop dx)) (not (zerop dy)))
+                       "  ????" "")
+                   (hv-sh v)
+                   (hv-classify v)))
+               (fff "  fc = ~s ~a~%" (p (h-falling-corner-p h))
+                 (when (h-falling-corner-p h)
+                   (list (p (dll-prev (h-falling-corner-p h)))
+                         (p (dll-next (h-falling-corner-p h))))))
+               (fff "  subholes:~%")
+               (when (h-subholes h)
+                 (do-dll/next (sh (h-subholes h))
+                   (fff "   ~s: start ~s, end ~s~%"
+                     sh (p (sh-start sh)) (p (sh-endv sh))))))
+             (ordered (a b c)
+               (or (<= a b c) (<= c b a)))
+             (new-vertex (x y prev)
+               (let ((v (make-hole-vertex x y prev)))
+                 (setf (gethash v classify-vertices) t)
+                 v))
+             (add-midpoint (v1 v2 x y)
+               (let* ((x1 (hv-x v1))
+                      (y1 (hv-y v1))
+                      (x2 (hv-x v2))
+                      (y2 (hv-y v2))
+                      (h (= y1 y2 y))
+                      (v (= x1 x2 x)))
+                 (fff "   add midpoint ~s,~s @ ~s,~s -> ~s,~s~%"
+                   x y x1 y1 x2 y2)
+                 (assert (or h v))
+                 (assert (not (and h v)))
                  (cond
-                   ((and first
-                         (= (x2 i) (hv-x first))
-                         (= (y2 i) (hv-y first)))
-                    (format t "gap = first @ ~s~%" (p first))
-                    (format t "close final gap @ ~s (from ~s)~%"
-                            (p prev) (p first))
-                    (push (list first prev ) new-gaps))
-                   (t
-                    (let ((p (make-hole-vertex (x2 i) (y2 i))))
-                      (format t "  add gap ~s @ ~s~%"
-                              (p p) (p prev))
-                      (assert (= (hv-x prev) (x1 i)))
-                      (assert (= (hv-y prev) (y1 i)))
-                      (unless first
-                        (setf first p))
-                      ;; spans are clockwise around outside of (filled)
-                      ;; quad, so we add them reversed into hole, so
-                      ;; they will be clockwise around empty hole
-                                        ;(connect p prev)
-                      (insert-before prev p)
-                      (setf prev p)
-                      ;; todo: add new spans to a worklist for
-                      ;; checking for new left notches, or blocked
-                      ;; Q-QW links
-                      )))
-                 (start-or-continue-gap prev))
-                (:to
-                 (format t "to: ~s,~s @ ~s,~s ~s,~s~%"
-                         (p a) (p b) (x1 i) (y1 i) (x2 i) (y2 i))
-                 (mark-affected b)
-                 (unless (and (= (hv-x b) (x1 i))
-                              (= (hv-y b) (y1 i)))
-                   #++(when (hv-n b)
-                        (break "handle q vert"))
-                   (format t "move 'to' vertex to  ~s,~s~%" (x1 i) (y1 i))
-                   (assert (not (gethash b to-move)))
-                   (setf (gethash b to-move) (list (x1 i) (y1 i))))
-                 (setf prev b)
-                 (end-gap b))
-                (:away
-                 (mark-affected a)
+                   ((and (= x1 x) (= y1 y))
+                    v1)
+                   ((and (= x2 x) (= y2 y))
+                    v2)
+                   (h
+                    (cond
+                      ((ordered x1 x x2)
+                       (loop while (ordered (hv-x (dll-next v1)) x x2)
+                             do (setf v1 (dll-next v1))))
+                      ((ordered x x1 x2)
+                       (loop until (ordered (hv-x (dll-prev v1)) x x2)
+                             do (setf v1 (dll-prev v1)))
+                       (assert (= (hv-y v1) y2 y)))
+                      (t (error "?")))
+                    (if (= (hv-x v1) x)
+                        v1
+                        (new-vertex x y v1)))
+                   (v
+                    (cond
+                      ((ordered y1 y y2)
+                       (loop while (ordered (hv-y (dll-next v1)) y y2)
+                             do (setf v1 (dll-next v1))))
+                      ((ordered y y1 y2)
+                       (loop until (ordered (hv-y (dll-prev v1)) y y2)
+                             do (setf v1 (dll-prev v1)))
+                       (assert (= (hv-x v1) x2 x)))
+                      (t (error "?")))
+                    (if (= (hv-y v1) y)
+                        v1
+                        (new-vertex x y v1)))))))
 
-                 (unless (and (= (hv-x a) (x2 i))
-                              (= (hv-y a) (y2 i)))
-                   (format t "move 'away' vertex to  ~s,~s~%" (x2 i) (y2 i))
-                   #++(when (hv-n a)
-                        (break "handle q vert"))
-                   (assert (not (gethash a to-move)))
-                   (setf (gethash a to-move) (list (x2 i) (y2 i)))
-                   )
-                 (setf prev a)
-                 (end-gap nil))
-                (:start-middle
-                 (disconnect a :next)
-                 (disconnect b :prev)
-                 (mark-affected b)
-                 (setf prev b)
-                 (end-gap a))
-                (:middle-end
-                 (disconnect a :next)
-                 (disconnect b :prev)
-                 (unless first
-                   (setf first a))
-                 (mark-affected b)
-                 (setf prev nil)
-                 ;; if a leftwards edge starts in the middle of a
-                 ;; placement rect, we either closed a hole (if there
-                 ;; is another contact to the right of this point),
-                 ;; moved a left notch (if point A was a Q node), or
-                 ;; created a left notch
-                 (when (and (not in-gap)
-                            (= (hv-y a) (hv-y b))
-                            (> (hv-x a) (hv-x b)))
-                   (add-or-update-left-notch a))
-                 (end-gap a))
-                (:middle
-                 (mark-affected b)
-                 (let* ((p1 (make-hole-vertex (x1 i) (y1 i) a))
-                        (p2 (make-hole-vertex (x2 i) (y2 i) p1)))
-                   (format t "  add middle points ~s, ~s~%" (p p1) (p p2))
-                   (disconnect p1 :next)
-                   (disconnect p2 :prev)
-                   (setf prev p2)
-                   (end-gap p1))
-)
+      ;; collect all the sequences of gaps, and remove points touching
+      ;; two contacts
+      (let ((to-remove (make-hash-table)))
+        (do-dll/next (v overlap endp)
+          (fff "node ~s: ~s~%" v (classify v))
+          (fff "   @ ~s,~s ~s,~s~%" (x1 v) (y1 v) (x2 v) (y2 v))
+          (unless (typep v '(or overlap-span gap-span))
+            (break "placement span ~s @ ~s,~s ~s,~s?"
+                   (classify v) (x1 v) (y1 v) (x2 v) (y2 v)))
+          (let* ((gap (eql :gap (classify v)))
+                 (after-contact (not (eql :gap (classify (dll-prev v)))))
+                 (before-contact (not (eql :gap (classify (dll-next v)))))
+                 (before-corner (eql :corner (classify (dll-next v))))
+                 (start-gap (and gap after-contact))
+                 (end-gap (and gap before-contact))
+                 (mid-contact (and (not gap)
+                                   after-contact
+                                   (not (eql :from
+                                             (classify v))))))
+            (fff "  ~s, ~s, ~s ,~s~%"
+              gap after-contact (classify (dll-prev v))
+              (classify v))
+
+            (when mid-contact
+              (fff "--- removing node ~s -> ~s (~s -> ~s -> ~s)~%"
+                (p (a v)) (p (b v))
+                (classify (dll-prev v))
+                (classify v)
+                (classify (dll-next v)))
+              (loop for a = (a v) then (dll-next a)
+                    until (or (eql a (b v))
+                              (and (= (hv-x a) (x2 v))
+                                   (= (hv-y a) (y2 v))))
+                    do (fff "   remove ~s~%" (p a))
+                       (setf (gethash a to-remove) (dll-next a)))
+              #++(remove-node (a v)))
+            (when (and endp (not gap) before-contact)
+              (fff "--- removing node2 ~s <- ~s (~s -> ~s -> ~s)~%"
+                (p (a v)) (p (b v))
+                (classify (dll-prev v))
+                (classify v)
+                (classify (dll-next v)))
+              (loop for b = (b v) then (dll-prev b)
+                    until (or (eql b (a v))
+                              (and (= (hv-x b) (x1 v))
+                                   (= (hv-y b) (y1 v))))
+                    do (fff "   remove ~s~%" (p b))
+                       (setf (gethash b to-remove) (dll-next b)))
+              #++(remove-node (b v)))
+            (cond
+              (start-gap
+               (let ((p (dll-prev v))
+                     (prev nil))
+                 (fff "--- starting gap, from ~s,~s -> ~s,~s~%"
+                   (x1 v) (y1 v) (x2 v) (y2 v))
+                 (fff "    ~s - ~s~%" (start p) (end p))
+                 (let ((n (add-midpoint (a p) (b p) (x1 v) (y1 v))))
+                   (fff "   start point ~s~%" (p n))
+                   (setf prev n))
+                 #++(cond
+                      ((< 0 (end p) 1)
+                       (let ((n (add-midpoint (a p) (b p) (x1 v) (y1 v))))
+                         (fff "   created start point ~s~%" (p n))
+                         (setf prev n)))
+                      (t
+                       (fff "    using end of previous contact ~s~%"
+                         (p (b p)))
+                       (setf prev (b p))))
+                 (push (list prev) gaps)))
+              (gap
+               (fff "--- mid gap, from ~s,~s -> ~s,~s~%"
+                 (x1 v) (y1 v) (x2 v) (y2 v))
+               (let ((n (new-vertex (x1 v) (y1 v) nil)))
+                 (fff "   add middle point ~s~%" (p n))
+                 (push n (car gaps)))))
+            (when end-gap
+              (let ((p (dll-next v))
+                    (next nil))
+                (fff "--- ending gap, from ~s,~s -> ~s,~s | ~s ~s~%~%"
+                  (x1 v) (y1 v) (x2 v) (y2 v)
+                  (start p) (end p))
+                (fff "  @ ~s, ~s~%" (p (a p)) (p (b p)))
+                ;; if the gap ends in a corner, add an extra vertex
+                ;; since will have 2 separate holes with a vertex at
+                ;; that point
+                (let ((n (if before-corner
+                             (new-vertex (x2 v) (y2 v) (a p))
+                             (add-midpoint (a p) (b p) (x2 v) (y2 v)))))
+                  (fff "   end point ~s on ~s,~s~%" (p n)
+                    (p (a p)) (p (b p)))
+                  (print-hole hole)
+                  (setf next n))
+                #++
+                (cond
+                  ((< 0 (start p) 1)
+                   (let ((n (add-midpoint (a p) (b p) (x2 v) (y2 v))))
+                     (fff "   created end point ~s on ~s,~s~%" (p n)
+                       (p (a p)) (p (b p)))
+                     (print-hole hole)
+                     (setf next n)))
+                  (t
+                   (fff "    using start of next contact ~s~%" (p (a p)))
+                   (setf next (a p))))
+                (push next (car gaps))))))
+        (fff "removing nodes ~s~%"
+          (mapcar #'p (alexandria:hash-table-keys to-remove)))
+        (maphash (lambda (k v) (declare (ignore v)) (remove-node k)) to-remove)
 
 
-                (otherwise
-                 (todo "todo"))
-                ))))
+        (fff "gaps:~%")
+        (loop for gap in gaps
+              do (fff " ~s~%" (mapcar 'p gap)))
 
-)
-
-      ;; perform updates
-
-      (let ((updated-subholes nil)
-            (remove-subholes nil))
-        (loop for work in (alexandria:hash-table-keys worklist)
-              for d = (gethash work to-disconnect)
-              for from = (gethash work connect-key<-value)
-              for to = (gethash work connect-key->value)
-              do (format t "disconnect: ~s @ ~s (~s ~s)~%"
-                         (p work) d (p from) (p to))
-                 (format t "  @@ ~s, ~s~%"
-                         (p (dll-prev work)) (p (dll-next work)))
-              when (eql d t)
-                do (remove-node work))
-
-        (when (plusp (hash-table-count to-move))
-          (loop for i being the hash-keys of to-move using (hash-value (tx ty))
-                do (cond
-                     ((or (and (= tx (hv-x (dll-prev i)))
-                               (= ty (hv-y (dll-prev i))))
-                          (and (= tx (hv-x (dll-next i)))
-                               (= ty (hv-y (dll-next i)))))
-                      (format t "remove duplicate node @ ~s (~s) (~s ~s)~%"
-                              (p i)
-                              (list tx ty)
-                              (p (dll-prev i))
-                              (p (dll-next i)))
-                      (delete-node i))
-                     (T
-                      (format t "move node from ~s to ~s~%"
-                              (p i) (list tx ty))
-                      (setf (hv-x i) tx
-                            (hv-y i) ty)))))
+        (let ((new (> (length gaps) 1)))
+          (when new
+            ;; if we are creating new holes, clear existing Q/N/W links
+            ;; since they confuse make-subholes
+            (do-dll/next (sh (h-subholes hole))
+              (when (and (sh-endv sh)
+                         (hv-q (sh-endv sh)))
+                (let* ((q (sh-endv sh))
+                       (n (hv-n q))
+                       (w (hv-w q)))
+                  (setf (hv-n n) nil)
+                  (setf (hv-w w) nil)
+                  (setf (hv-q q) nil)
+                  (setf (hv-n q) nil)
+                  (setf (hv-w q) nil)))))
 
 
-        (when (> (length new-gaps) 1)
-          (format t "vvv before new-gaps:~%")
+          (fff "vvv before gap updates:~%")
+
           (loop for h in (list* hole new-holes)
                 for i from 0
-                do (format t "hole ~s/~s ~s:~%" i (length new-holes) h)
-                   (print-hole h)))
+                do (fff "hole ~s/~s ~s:~%"
+                     i (length new-holes) h)
+                   (fff " ~s <-> ~s~%"
+                     (dll-prev h) (dll-next h))
+                   (print-hole h))
 
-        (let ((l (length new-gaps)))
-          (format t "new gaps ~s~%" l)
-          (loop for g in new-gaps
-                for i from 1
-                do (format t " ~s/~s = ~s~%" i l (mapcar #'p g)))
-          (cond
-            ((zerop l)
-             (break "no gaps?")
-             (format t "filled hole ~s~%" hole)
-             (return-from remove-quad-from-hole nil))
-            ((> l 1)
-             (let ((update-next (make-hash-table))
-                   (update-prev (make-hash-table))
-                   (modified-holes))
-              (flet ((reconnect (from to)
-                       ;; store changes so we can try to keep DLLs valid
-                       (setf (gethash from update-next) to)
-                       (setf (gethash to update-prev) from)))
-                (loop for gap in new-gaps
-                      for verts = gap
-                      for h = hole then (make-instance 'hole)
-                      ;; add hole to dll if new
-                      do (unless (eql h hole)
-                           (insert-before hole h))
-                         (push h modified-holes)
-                         (setf (h-vertices h) (first verts))
-                         ;; connect
-                         (loop for (from to) on verts
-                               while to
-                               do (reconnect from to))))
-
-
-               (loop for from being the hash-keys of update-next
-                       using (hash-value to)
-                     ;; previous NEXT
-                     for old-next = (dll-next from)
-                     ;; NEXT should have a new value for prev
-                     for old = (gethash old-next update-prev)
-                     do (format t "  update link: ~s -> ~s~%" (p from) (p to))
-                        (format t "  was ~s -> ~s~%" (p from) (p old-next))
-                        (format t "  prev = ~s~%" (when old (p old)))
-                        (assert old)
-                        (assert old-next)
-                        (rotatef (dll-prev old-next)
-                                 (dll-prev to))
-                        (rotatef (dll-next from)
-                                 (dll-next old)))
-
-               ;; for now just rebuild all holes we changed. not sure
-               ;; if we can reliably update subholes in place or not?
-               ;; would have to at least walk enough to find which
-               ;; hole it is in now
-               (loop for a in modified-holes
-                     do (setf (h-subholes a) (make-subholes a)))
-               (format t "^^^ after new-gaps:~%")
-               (loop for h in modified-holes
-                     for i from 1
-                     do (format t "hole ~s/~s ~s:~%"
-                                i (length modified-holes) h)
-                        (format t " ~s <-> ~s~%"
-                                (dll-prev h) (dll-next h))
-                        (print-hole h))
-               (return-from remove-quad-from-hole nil))
-
-             )
-            ((= l 1)
-             (format t "no new holes")))
-)
-
-        (when (plusp (hash-table-count affected-subholes))
-          ;; for each subhole that needs updated, start from it's
-          ;; "end" point, and search CW until we find either a
-          ;; rightward edge after a leftwards edge (in which case we
-          ;; just passed the leftmost edge), or a Q vertex, in which
-          ;; case the subhole has been removed and that Q can be
-          ;; removed (and subhole it was in gets the END vertex from
-          ;; this one).  While searching, we need to mark the
-          ;; beginning of the first leftwards edge as new Q point
-          (format t "affected-subholes: ~s~%"
-                  (hash-table-count affected-subholes))
-          (loop with leftp = nil
-                with rightp = nil
-                with q = nil
-                for sh in (alexandria:hash-table-keys affected-subholes)
-                for hole = (sh-hole sh)
-                for end = (sh-endv sh)
-                do (format t " check subhole ~s ~s - ~s~%"
-                           sh (p (sh-start sh)) (p (sh-endv sh)))
-                   (do-hole-vertices/next (v end dx dy endp)
-                        (format t "  check ~s dx:~s dy:~s~%" (p v) dx dy)
-                        (cond
-                          ((and (hv-n v)
-                                (not (eql sh (hv-sh v)))
-                                )
-                           ;; found Q vertex from another subhole, remove
-                           ;; this subhole, and update the END link
-                           (do-dll/next (sh2 (h-subholes hole) endp)
-                             ;; todo: make some sort of backref or index
-                             ;; to find subhole for a q vertex
-                             (when (eql (sh-endv sh2) v)
-                               (setf (sh-endv sh2) (or q end))
-                               (setf (sh-end sh2) (hv-x (or q end)))
-                               (when q
-                                 (when (hv-n end)
-                                   (setf (gethash end move-q) (list sh2 end)))
-                                 (setf (gethash v move-q) (list sh2 q)))
-                               (return nil))
-                             (format t "   remove subhole ~s (~s - ~s)~%"
-                                     sh (p (sh-start sh))
-                                     (p (sh-endv sh)))
-                             #++
-                             (when endp
-                               (break "couldn't find subhole for q vertex?")))
-                           (setf (sh-end sh) nil)
-                           (push sh remove-subholes)
-                           (return nil))
-
-                          ((and dx (minusp dx))
-                           ;; found Q or end vertex for this subhole.
-                           ;;
-                           (unless q
-                             (setf q (dll-prev v)))
-                           (setf leftp t))
-                          ((and dx (plusp dx) (not leftp))
-                           ;; looking for new Q vertex
-                           (setf rightp t)
-                           (assert (not q)))
-                          ((and dy (plusp dy) (not leftp))
-                           ;; found right edge or falling edge, subhole
-                           ;; has been removed or separated
-                           (setf (sh-end sh) nil)
-                           (push sh remove-subholes)
-                           (return nil))
-                          ((and dx (plusp dx))
-                           (assert q)
-                           ;; found leftmost edge (must have gone left at
-                           ;; least once, and up in between, so prev
-                           ;; twice should be OK
-                           (format t "    move start of subhole ~s from ~s to ~s~%      @  ~s <- ~s~%"
-                                   sh (p (sh-start sh))
-                                   (p (dll-prev (dll-prev v)))
-                                   (p (dll-prev v)) (p v)
-                                   )
-                           (format t "      q = ~s (~s), leftp = ~s, rightp = ~s~%"
-                                   (p q) (if (hv-n end) t nil) leftp rightp)
-                           (setf (sh-start sh) (dll-prev (dll-prev v)))
-                           (setf (hv-sh (sh-start sh)) sh)
-                           ;; update or create Q vertex
-                           (when (or (hv-n end) rightp)
-                             (unless (eql q end)
-                               (setf (gethash end move-q) (list sh q))
-                               (setf (sh-endv sh) q)
-                               (setf (sh-end sh) (hv-x q))))
-                           (push sh updated-subholes)
-                           (return nil))
-                          )
-                        )
-                ))
+          ;; then update vertex connections, creating new holes if needed
+          (loop for last = (car gaps)
+                for (gap next) on gaps
+                for h = hole then (make-instance 'hole)
+                do (fff "gap ~s @ hole ~s~%" (mapcar 'p gap) hole)
+                   (flet ((r (x)
+                            (when (gethash x to-remove)
+                              (fff "removed gap @ ~s~%" (p x))
+                              (break "removed gap" x))
+                            (loop while (gethash x to-remove)
+                                  do (fff " gap ~s -> ~s~%"
+                                       (p x) (p (gethash x to-remove)))
+                                     (setf x (gethash x to-remove)))
+                            x))
+                     (setf last (mapcar #'r last))
+                     (setf gap (mapcar #'r gap)))
+                   (fff " -> ~s,~%"
+                     (mapcar #'p gap))
+                   ;; add hole to dll if new
+                   (unless (eql h hole)
+                     (insert-before hole h)
+                     (push h new-holes))
+                   ;; if we are creatinug more holes, we need to
+                   ;; rearrange the prev/next links at the gaps to split
+                   ;; the holes
+                   (when new
+                     (fff "  update h-vertices~%")
+                     (setf (h-vertices h) (first gap))
+                     (when next
+                       ;; link endpoints of gap
+                       (let* ((first (first gap))
+                              (fnext (first next))
+                              (next (dll-next first))
+                              (nnext (dll-next fnext)))
+                         (fff "  update link @ ~s~%" (p first))
+                         (fff "  was ~s -> ~s, ~s -> ~s~%"
+                           (p first) (p next)
+                           (p fnext) (p nnext))
+                         ;; we need to update classify/corner for all
+                         ;; modified vertices
+                         (setf (gethash first classify-vertices) t)
+                         (setf (gethash fnext classify-vertices) t)
+                         (setf (gethash next classify-vertices) t)
+                         (setf (gethash nnext classify-vertices) t)
+                         (rotatef (dll-next first)
+                                  (dll-next fnext))
+                         (rotatef (dll-prev next)
+                                  (dll-prev nnext))
+                         (fff " -> ~s -> ~s~%"
+                           (p first) (p (dll-next first)))
+                         (fff " -> ~s -> ~s~%"
+                           (p fnext) (p (dll-next fnext))))))
+                   ;; add intermediate gap points if any
+                   (loop for (p v . n) on gap
+                         do (fff "add gap point ~s (between ~s,~s)~%"
+                              (p v) (p p) (mapcar 'p n))
+                         while n
+                         do (insert-after p v))
+                   (unless new
+                     ;; mark any subholes affected by new edge
+                     (mark-affected (car gap) (car (last gap))))
+                   ;; remove any extra vertices we added in the middle
+                   ;; of edges
+                   (loop for v in gap
+                         for pv = (dll-prev v)
+                         for nv = (dll-next v)
+                         when (or (= (hv-x pv) (hv-x v) (hv-x nv))
+                                  (= (hv-y pv) (hv-y v) (hv-y nv)))
+                           do (fff "  removing extra point(~s -> ~s - ~s)~%"
+                                (p pv) (p v) (p nv))
+                              (when (eql (h-vertices h) v)
+                                (setf (h-vertices h) (dll-prev v)))
+                              (remove-node v)))))
 
 
-        (when (plusp (hash-table-count left-notch))
-          #++
-          (break "check for new/updated left notch~%~s~%~s"
-                 (mapcar #'p (alexandria:hash-table-keys left-notch))
-                 left-notch)
-          (loop for ln being the hash-keys of left-notch
-                for leftp = nil
-                for rightp = nil
-                for q = nil
-                do (do-hole-vertices/next (v ln dx dy)
-                     (cond
-                       ((and dy (minusp dy))
-                        ;; no new subhole
-                        (return nil))
-                       ((and dx (minusp dx))
-                        (unless q
-                          (setf q (dll-prev v)))
-                        (setf leftp t))
-                       ((and dx (plusp dx) leftp)
-                        ;; just passed leftmost edge
+      (fff "^^^ after gap updates:~%")
 
-                        (let ((sh (make-subhole hole
-                                                (dll-prev v)
-                                                (h-subholes hole)
-                                                :update nil
-                                                )))
-                          (assert q)
-                          (assert (not (gethash q move-q)))
-                          (setf (gethash q move-q) (list sh q))
-                          (push sh updated-subholes))
-                        (return nil))))))
+      (loop for h in (list* hole new-holes)
+            for i from 0
+            do (fff "hole ~s/~s ~s:~%"
+                 i (length new-holes) h)
+               (fff " ~s <-> ~s~%"
+                 (dll-prev h) (dll-next h))
+               (print-hole h))
 
-        (format t "remove-subholes ~s~%" remove-subholes)
-        (format t "move-q ~s~%" (mapcar #'p(alexandria:hash-table-keys move-q)))
+      (loop for v being the hash-keys of classify-vertices
+            do (multiple-value-bind (edge corner)
+                   (classify-vertical-edge v)
+                 #++(assert (or (not (hv-corner v))
+                                (eql (hv-corner v) corner)))
+                 #++(assert (or (not (hv-classify v))
+                                (eql (hv-classify v) edge)))
+                 (setf (hv-classify v) edge
+                       (hv-corner v) corner)))
 
+      ;; update or rebuild subholes
+      (cond
+        (new-holes
+         (fff "build subholes for new holes~%")
+         ;; if we created new holes, just build all subholes from scratch
+         (loop for h in (list* hole new-holes)
+               for sh = (make-subholes h :clean t)
+               do (fff "  ~s: ~s~%" h sh)
+                  (assert sh)
+                  (setf (h-subholes h) sh)))
+        ((null gaps)
+         (fff "deleted hole~%")
+         ;; deleted the hole, remove it
+         (break "remove hole")
+         (delete-node hole))
+        (t
+         (fff "rebuild subholes from scratch~%")
+         ;; updating subholes is still flaky, try rebuilding from scratch
+         (do-dll/next (v (h-vertices hole))
+           (setf (hv-q v) nil
+                 (hv-w v) nil
+                 (hv-n v) nil
+                 (hv-sh v) nil))
+         (setf (h-subholes hole)
+               (make-subholes hole :clean t))))
 
-        (when remove-subholes
-          (loop for sh in remove-subholes
-                for start = (sh-start sh)
-                do (format t "remove ~s @ ~s~%" sh (p start))
-                   (assert (and (not (dll-next start))
-                                (not (dll-prev start))))
-                   (when (eql sh (h-subholes hole))
-                     (setf (h-subholes hole)
-                           (dll-next sh)))
-                   (delete-node sh)
-
-)
-)
-        ;; todo: update Q links for holes that are still live, if they
-        ;; overlap placement
-        (when (plusp (hash-table-count move-q))
-          #++(break "move ~s" (alexandria:hash-table-alist move-q))
-          (loop for q being the hash-keys of move-q using (hash-value (sh to))
-                for n = (hv-n q)
-                for w = (hv-w q)
-                do (format t "move q ~s -> ~s: ~s ~s~%"
-                           (p q) (p to) (p n) (p w))
-                   (when n
-                        ;; remove old N links
-                        (setf (hv-n q) nil)
-                        (setf (hv-q n) nil)
-                        ;; remove N node completely if possible
-                        (when (= (hv-y (dll-prev n))
-                                 (hv-y n)
-                                 (hv-y (dll-next n)))
-                          (delete-node n)))
-                   (when w
-                     ;; remove old W links
-                     (setf (hv-w q) nil)
-                     (setf (hv-q w) nil)
-                     ;; remove W node completely if possible
-                     (when (= (hv-x (dll-prev w))
-                              (hv-x w)
-                              (hv-x (dll-next w)))
-                       (delete-node w)))
-                   ;; move the point
-                   (setf q to)
-                   ;; find new N and W points
-                   (when (hv-classify q)
-                     (assert (equalp (hv-classify q) '(:left-notch :top))))
-                   (let ((e (classify-vertical-edge q (dll-prev q))))
-                     (when e
-                       (assert (eql e :left-notch))
-                       (setf (hv-classify q) '(:left-notch :top))
-                       (set-qnw q)))
+      ;; if we had a falling corner, make sure it still is one
+      (when (h-falling-corner-p hole)
+        (fff "<<< check f-c-p : ~s ~s @ ~s ~s~%"
+          (p (h-falling-corner-p hole))
+          (hv-classify (h-falling-corner-p hole))
+          (p (dll-prev (h-falling-corner-p hole)))
+          (p (dll-next (h-falling-corner-p hole)))))
+      (when (and (h-falling-corner-p hole)
+                 (or (not (eql (hv-classify (h-falling-corner-p hole))
+                               :falling-edge))
+                     (not (dll-next (h-falling-corner-p hole)))))
+        (fff " clear falling corner from ~s~%" hole)
+        (setf (h-falling-corner-p hole) nil))
 
 
 
 
-)
-)
+      (assert (dll-next hole))
+      (fff ">>> done removing:~%")
+      (loop for h in (list* hole new-holes)
+            for i from 0
+            do (fff "hole ~s/~s ~s:~%"
+                 i (length new-holes) h)
+               (fff " ~s <-> ~s~%"
+                 (dll-prev h) (dll-next h))
+               (print-hole h)
 
 
-        (format t "^^^ after uipdates:~%")
-        (loop for h in (list* hole new-holes)
-              for i from 0
-              do (format t "hole ~s/~s ~s:~%" i (length new-holes) h)
-                 (print-hole h))
-
-        (format t "updated = ~s~%" updated-subholes)
-
-        ;; rebuild top/bottom data structures for any modified
-        ;; subholes that weren't removed
-        (when updated-subholes
-          (map nil 'update-subhole updated-subholes)
-          )))
-
-    )
-
-
-
-  )
-
-(init-hole 256 256)
+               (do-dll/next (sh (h-subholes h))
+                 (fff "  subhole ~s: @ ~s~%" sh (p (sh-start sh)))
+                 (fff "    fc = ~s ~a~%" (p (sh-falling-corner-p sh))
+                   (when (sh-falling-corner-p sh)
+                     (list (p (dll-prev (sh-falling-corner-p sh)))
+                           (p (dll-next (sh-falling-corner-p sh))))))
+                 (fff "    top = :~%")
+                 (loop for d across (f-d (sh-top sh))
+                       for h across (f-h (sh-top sh))
+                       for g across (f-gaps (sh-top sh))
+                       do (fff "     ~s -> ~s @ ~s~%"
+                            (pp d) (pp h) g))
+                 (fff "    bottom = :~%")
+                 (loop for d across (f-d (sh-bottom sh))
+                       for h across (f-h (sh-bottom sh))
+                       do (fff "     ~s -> ~s~%"
+                            (pp d) (pp h)))))))
+  hole)
 #++
 (ql:quickload '(binpack parachute))
 
 #++
 (let* ((h (%make-hole-from-points binpack-test::*hole-fig6b*))
-      (p (time (find-all-placements h 1 1))))
+       (p (time (find-all-placements h 1 1))))
   (time
    (mapcar
     (lambda (p) (multiple-value-list (intersect-hole-with-quad h p)))
-    p
-    )))
+    p)))
 #++
 (let* ((h (binpack2-vis::hole binpack2-vis::*w*))
        (p (time (find-all-placements
                  h
                  (* 16 (binpack2-vis::pwx binpack2-vis::*w*))
                  (* 16 (binpack2-vis::pwy binpack2-vis::*w*))))))
-  (format t "--------------~%")
+  (fff "--------------~%")
   (binpack2-vis::redraw-hole binpack2-vis::*w*)
-  (format t "--------------~%")
+  (fff "--------------~%")
   (time
    (mapcar
-    (lambda (p) (remove-quad-from-hole h p ))
-    p
-    )))
-
+    (lambda (p) (remove-quad-from-hole h p))
+    p)))
+#++
 (defun print-hole (h)
   (let ((l nil))
     (do-dll/next (v (h-vertices h))
       (push (hv-x v) l)
       (push (hv-y v) l))
-    (format t "    ~s~%" (nreverse l)))
-)
+    (fff "    ~s~%" (nreverse l))))
+
+(defun smallest-hole (px)
+  (loop with a = 0
+        with mh = nil
+        with mp = nil
+        for p in px
+        for h = (hole p)
+        when (or (not mp)
+                 (< (* (ht-max-height h)
+                       (ht-max-width h))
+                    a))
+          do (setf a (* (ht-max-height h)
+                        (ht-max-width h)))
+             (setf mh h)
+             (setf mp nil)
+        when (eql mh (hole p))
+          do (push p mp)
+        finally (return mp)))
+(defun maximize-contact (px)
+  (loop with mc = 0
+        with mp = nil
+        for p in px
+        for pm = (penalty-multiplier p)
+        do (unless (full-contact p)
+             (setf (values (overlap p)
+                           (full-contact p))
+                   (intersect-hole-with-quad p)))
+           (when (or (not mp)
+                     (> (* pm (full-contact p))
+                        mc))
+             (setf mc (* pm (full-contact p))
+                   mp nil))
+        when (or (not mp) (= mc (* pm (full-contact p))))
+          do (push p mp)
+        finally (return mp)))
+
+(defun minimize-contact (px)
+  (loop with mc = 0
+        with mp = nil
+        for p in px
+        for pm = (- 2 (penalty-multiplier p))
+        do (unless (full-contact p)
+             (setf (values (overlap p)
+                           (full-contact p))
+                   (intersect-hole-with-quad p)))
+           (when (or (not mp) (< (* (full-contact p) pm) mc))
+             (setf mc (* (full-contact p) pm)
+                   mp nil))
+        when (or (not mp) (= mc (* (full-contact p) pm)))
+          do (push p mp)
+        finally (return mp)))
+
+(defun ceilingp2 (x)
+  (expt 2 (ceiling (log x 2))))
+
+(defclass shaping ()
+  ((w :initform 16 :accessor w :initarg :w)
+   (h :initform 16 :accessor h :initarg :h)
+   ;; if set, try to maintain more square shape
+   (square :initform t :accessor square :initarg :square)))
+
+(defclass shaping-po2 (shaping)
+  ((square :initform t :accessor square :initarg :square)))
+
+(defmethod initialize-instance :after ((o shaping-po2) &key)
+  (setf (w o) (ceilingp2 (w o)))
+  (setf (h o) (ceilingp2 (h o))))
+
+(defmethod shaping-penalty ((s shaping-po2) p)
+  (let ((w (w s))
+        (h (h s)))
+    (setf (penalty-multiplier p)
+          (let ((x (+ (x p) (w p)))
+                (y (+ (y p) (h p))))
+            (cond
+              ;; fits, no penalty
+              ((and (<= x w)
+                    (<= y h))
+               0)
+              ;; otherwise calculate penalty = # of pixels expanded
+              (t
+               (let* ((a1 (* w h))
+                      (w2 (max w (ceilingp2 x)))
+                      (h2 (max h (ceilingp2 y)))
+                      (a2 (* w2 h2))
+                      (sp (if (square s)
+                              (/ (max w2 h2)
+                                 (min w2 h2))
+                              1)))
+                 (if (= a1 a2)
+                     (break "??")
+                     (* sp (+ 1 (/ (- a2 a1) a1)))))))))))
+
+(defmethod shaping-add ((s shaping-po2) p)
+  (let* ((x (+ (x p) (w p)))
+         (y (+ (y p) (h p)))
+         (w2 (max (w s) (ceilingp2 x)))
+         (h2 (max (h s) (ceilingp2 y))))
+    (when (or (/= w2 (w s))
+              (/= h2 (h s)))
+      (format t "expand from ~sx~s to ~sx~s~%"
+              (w s) (h s) w2 h2))
+    (setf (w s) w2
+          (h s) h2)))
+
+
+
+(defclass shaping-quantized (shaping)
+  ;; increase w,h by multiples of dx or dy
+  ((dx :initform 4 :initarg :dx :accessor dx)
+   (dy :initform 4 :initarg :dy :accessor dy)))
+
+(defun ceilingn (x n)
+  (* n (ceiling x n)))
+
+(defmethod initialize-instance :after ((o shaping-quantized) &key)
+  (assert (>= (dx o) 1))
+  (assert (>= (dy o) 1))
+  (setf (w o) (ceilingn (w o) (dx o)))
+  (setf (h o) (ceilingn (h o) (dy o))))
+
+(defmethod shaping-penalty ((s shaping-quantized) p)
+  (let ((w (w s))
+        (h (h s)))
+    (setf (penalty-multiplier p)
+          (let ((x (+ (x p) (w p)))
+                (y (+ (y p) (h p))))
+            (cond
+              ;; fits, no penalty
+              ((and (<= x w)
+                    (<= y h))
+               0)
+              ;; otherwise calculate penalty = # of pixels expanded
+              (t
+               (let* ((a1 (* w h))
+                      (w2 (max w (ceilingn x (dx s))))
+                      (h2 (max h (ceilingn y (dy s))))
+                      (a2 (* w2 h2))
+                      (sp (if (square s)
+                              (/ (max w2 h2)
+                                 (min w2 h2))
+                              1)))
+                 (if (= a1 a2)
+                     (break "??")
+                     (* sp (+ 1 (/ (- a2 a1) a1)))))))))))
+
+(defmethod shaping-add ((s shaping-quantized) p)
+  (let* ((x (+ (x p) (w p)))
+         (y (+ (y p) (h p)))
+         (w2 (max (w s) (ceilingn x (dx s))))
+         (h2 (max (h s) (ceilingn y (dy s)))))
+    #++(when (or (/= w2 (w s))
+                 (/= h2 (h s)))
+         (format t "expand from ~sx~s to ~sx~s~%"
+                 (w s) (h s) w2 h2))
+    (setf (w s) w2
+          (h s) h2)))
+
+
+(defclass shaping-circle (shaping)
+  ;; not expected to actually be useful
+  ())
+
+(defmethod shaping-penalty ((s shaping-circle) p)
+  (setf (penalty-multiplier p)
+        (let ((x (+ (x p) (w p)))
+              (y (+ (y p) (h p))))
+          (+ (expt x 2) (expt y 2)))))
+
+(defmethod shaping-add ((s shaping-circle) p))
+
+
+(defclass shaping-sparse (shaping)
+  ((mask :accessor mask :initform (make-array '(256 256)
+                                              :element-type 'bit
+                                              :initial-element 0))
+   (dx :initform 256 :initarg :dx :accessor dx)
+   (dy :initform 256 :initarg :dy :accessor dy)))
+
+(defmethod shaping-penalty ((s shaping-sparse) p)
+  (let ((pm 0))
+    (loop for x from (floor (x p) (dx s))
+          upto (ceiling(+ (x p) (w p)) (dx s))
+          do (loop for y from (floor (y p) (dy s))
+                   upto (ceiling (+ (y p) (h p)) (dy s))
+                   do (incf pm
+                            (if (and (array-in-bounds-p (mask s) x y)
+                                     (= 1 (aref (mask s) x y)))
+                                0
+                                1))))
+    (setf (penalty-multiplier p)
+          pm)))
+
+(defmethod shaping-add ((s shaping-sparse) p)
+  (loop for x from (floor (x p) (dx s))
+        upto (ceiling (+ (x p) (w p)) (dx s))
+        do (loop for y from (floor (y p) (dy s))
+                 upto (ceiling (+ (y p) (h p)) (dy s))
+                 do (unless (array-in-bounds-p (mask s) x y)
+                      (setf (mask s)
+                            (adjust-array (mask s)
+                                          (list
+                                           (max (1+ x)
+                                                (array-dimension (mask s) 0))
+                                           (max (1+ y)
+                                                (array-dimension (mask s) 1))))))
+                 #++(when (zerop (aref (mask s) x y))
+                      (format t "expand to ~s ~s~%" x y))
+                    (setf (aref (mask s) x y) 1))))
+
+
+
+(defun minimize-penalty (px)
+  (loop with mc = 0
+        with mp = nil
+        for p in px
+        for pm = (penalty-multiplier p)
+        do (when (or (not mp)
+                     (< pm mc))
+             (setf mc pm
+                   mp nil))
+        when (or (not mp)
+                 (= mc pm))
+          do (push p mp)
+        finally (return mp)))
+
+(defun place (hole w h &key
+                         (heuristic1 'minimize-penalty)
+                         (heuristic2 'maximize-contact)
+                         shaping)
+  (let ((px (find-all-placements hole w h)))
+    (when shaping
+      (loop for p in px do (shaping-penalty shaping p)))
+    (progn ;unless (loop for p in px always (zerop (penalty-multiplier p))))
+      #++(format t "px:~s " (map 'list 'penalty-multiplier px))
+      ;; if we have more than 1 entry, try to pick the best
+      (when (cdr px)
+        (setf px (funcall heuristic1 px))
+        #++(format t "1> ~s " (map 'list 'penalty-multiplier px)))
+      ;; if we still have more than 1, maybe try more expensive tests
+      (when (and (cdr px) heuristic2)
+        (setf px (funcall heuristic2 px))
+        #++(format t "2> ~s " (map 'list 'penalty-multiplier px)))
+      #++(format t " -> ~s~%" (penalty-multiplier (car px)))
+      (cond
+        (px
+         (let ((p (first px)))
+           (when shaping
+             (shaping-add shaping p))
+           #++(format t "remove ~s,~s @ ~s,~s~%" (w p) (h p) (x p) (y p))
+           (setf hole (remove-quad-from-hole hole p))
+           (values hole (x p) (y p))))
+        (t (values hole nil nil))))))
