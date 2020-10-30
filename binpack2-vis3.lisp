@@ -1,11 +1,11 @@
-(defpackage #:binpack2-vis2
+(defpackage #:binpack2-vis3
   (:use :cl #:3b-glim-example/s #:3b-glim-example/s-shaders)
   (:local-nicknames (#:glim #:3b-glim/s)
                     (#:2d #:3b-glim/2d)
                     (#:a #:alexandria-2)
                     (#:b #:binpack)))
 
-(in-package binpack2-vis2)
+(in-package binpack2-vis3)
 
 (defvar *format*
   (glim:compile-vertex-format
@@ -41,7 +41,7 @@
 (defvar *replays* nil)
 
 
-(defclass binpack2-vis2 (scratchpad)
+(defclass binpack2-vis3 (scratchpad)
   ((scale :initform 1 :accessor scale)
    (draw-scale :initform 16 :accessor draw-scale)
    (spacing :initform 16 :accessor spacing)
@@ -54,6 +54,7 @@
    (gmy :initform 0 :accessor gmy)
    (snap :initform t :accessor snap)
    (packing :initform nil :accessor packing)
+   (playing :initform nil :accessor playing)
    (index :initform 0 :accessor index))
 
   (:default-initargs :shaders '((:tex :vertex vertex/simple
@@ -99,14 +100,16 @@
                       (glim:ensure-matrix :modelview)))
   (glim:uniform 'normal-matrix (glim:ensure-matrix :modelview)))
 
-(defmethod display ((w binpack2-vis2) now)
+(defmethod display ((w binpack2-vis3) now)
   (setf *w* w)
   (when (and *replays*
-             (or (not (packing w))
+             (not (playing w))
+             #++(or (not (packing w))
                  (>= (index w)
                      (length (packing w)))))
     (setf (packing w) (sb-ext:atomic-pop *replays*)
-          (index w) 0))
+          (index w) (get-internal-real-time)
+          (playing w) t))
   (let ((*random-state* (sb-ext:seed-random-state 123)))
     (glim:with-state (*format*)
 
@@ -135,6 +138,17 @@
              (step (spacing w))
              (x2 (/ (wx w) scale))
              (y2 (/ (wy w) scale)))
+        (when (and (packing w)
+                   (not (aref *flags* 3)))
+          (destructuring-bind (&key (t1 0)
+                                 ((:w wx) 11) ((:h wy) 11)
+                                 (p 0) (v #()))
+              (packing w)
+            (declare (ignore v t1))
+            (let ((px (+ wx (* (+ 100 wx) (mod (1- p) (ceiling (sqrt p))))))
+                  (py (+ wy (* (+ 100 wy) (floor (1- p) (ceiling (sqrt p)))))))
+              (setf scale (min (/ (* 1.8 (wx w)) px)
+                               (/ (* 1.8 (wy w)) py))))))
         (glim:with-pushed-matrix (:modelview)
           (ecase (origin w)
             (:center
@@ -207,24 +221,58 @@
             (vertex x2 0)
             (vertex 0 y1)
             (vertex 0 y2))
-
-          (incf (index w) 55)
-          (glim:with-draw (:quads :shader :solid)
-            (when (packing w)
-              (loop for i below (index w)
-                    for (x1 y1 wx wy) across (packing w)
-                    for x2 = (+ x1 wx)
-                    for y2 = (+ y1 wy)
-                    do (apply #'color (random-rgb :alpha 0.75))
-                       (vertex x1 y1)
-                       (vertex x2 y1)
-                       (vertex x2 y2)
-                       (vertex x1 y2))))
+          (when (packing w)
+            (destructuring-bind (&key (t1 0)
+                                   ((:w wx) 11) ((:h wy) 11)
+                                   (p 0) (v #()))
+                (packing w)
+              (glim:with-draw (:lines :shader :solid)
+                (loop for i below p
+                      for px = (* (+ wx 100)
+                                  (mod i (ceiling (sqrt p))))
+                      for py = (* (+ wy 100)
+                                  (floor i (ceiling (sqrt p))))
+                      do (color (ldb (byte 1 0) i)
+                                (ldb (byte 1 1) i)
+                                (ldb (byte 1 2) i)
+                                1)
+                         (color (random 2) (random 2) (random 2) 1)
+                         (vertex px py) (vertex (+ px wx) py)
+                         (vertex (+ px wx) py) (vertex (+ px wx) (+ py wy))
+                         (vertex (+ px wx) (+ py wy)) (vertex px (+ py wy))
+                         (vertex px (+ py wy)) (vertex px py)))
+              
+              (glim:with-draw (:quads :shader :solid)
+                (setf (playing w) nil)
+                (loop with dt = (- (get-internal-real-time)
+                                      (index w))
+                      for (.x1 .y1 rwx rwy i tn) across v
+                      for px = (* (+ wx 100)
+                                  (mod i (ceiling (sqrt p))))
+                      for py = (* (+ wy 100)
+                                  (floor i (ceiling (sqrt p))))
+                      for x1 = (+ .x1 px)
+                      for y1 = (+ .y1 py)
+                      for x2 = (+ x1 rwx)
+                      for y2 = (+ y1 rwy)
+                      for playing = (and tn
+                                         (< (* (if (aref *flags* 4)
+                                                   20
+                                                   1)
+                                               (- tn t1))
+                                            dt))
+                      do (apply #'color (random-rgb :alpha 0.75))
+                         (vertex x1 y1)
+                         (vertex x2 y1)
+                         (vertex x2 y2)
+                         (vertex x1 y2)
+                         (setf (playing w) (not playing))
+                      while playing))))
           (dispatch-draws w))))))
 
 
 #++
-(defmethod mouse ((w binpack2-vis2) button state x y)
+(defmethod mouse ((w binpack2-vis3) button state x y)
   (format t "~s ~s~%" button state)
   (setf *esc* nil)
   (when (eql state :down)
@@ -235,19 +283,19 @@
        ))))
 
 
-(defmethod mouse-wheel ((window binpack2-vis2) button state x y)
+(defmethod mouse-wheel ((window binpack2-vis3) button state x y)
   (format t "wheel ~s ~s~%" button state)
   (if (eql state :up)
       (setf (scale window) (* (scale window) 1.1))
       (setf (scale window) (/ (scale window) 1.1))))
 
 #++
-(defmethod keyboard-up ((window binpack2-vis2) key x y)
+(defmethod keyboard-up ((window binpack2-vis3) key x y)
 
   )
 
 
-(defmethod keyboard :around ((window binpack2-vis2) key x y)
+(defmethod keyboard :around ((window binpack2-vis3) key x y)
   (cond
     ((and (eql key #\q) *esc*)
      (destroy-window window))
@@ -257,7 +305,7 @@
      (setf *esc* nil)
      (call-next-method))))
 
-(defmethod keyboard ((window binpack2-vis2) key x y)
+(defmethod keyboard ((window binpack2-vis3) key x y)
   (declare (ignore x y))
   (print key)
   (case key
@@ -290,29 +338,29 @@
     (#\Esc
      (glut:destroy-current-window))))
 
-(defmethod entry ((w binpack2-vis2) state)
+(defmethod entry ((w binpack2-vis3) state)
   (format t "mouse -> ~s~%" state)
   #++(when (eql state :left) (break "enter ~s~%" state))
   (setf *mouse* (eql state :entered)))
 
-(defmethod init-gl ((w binpack2-vis2))
+(defmethod init-gl ((w binpack2-vis3))
   (setf *esc* nil)
   (gl:pixel-store :unpack-alignment 1)
 
   (gl:disable :dither))
 
-(defun binpack2-vis2 (&rest args)
-  (glut:display-window (apply #'make-instance 'binpack2-vis2 args)))
+(defun binpack2-vis3 (&rest args)
+  (glut:display-window (apply #'make-instance 'binpack2-vis3 args)))
 
 #++
 (ql:quickload '(binpack parachute
                 alexandria sb-cga cl-opengl
                 3b-glim/example/s 3b-glim/2d 3bgl-shader))
 #++
-(binpack2-vis2 :pos-x 2440 :pos-y 140 :width 1400 :height 850)
+(binpack2-vis3 :pos-x 2440 :pos-y 140 :width 1400 :height 850)
 #++
-(binpack2-vis2 :pos-x 3100 :pos-y 300 :width 700 :height 700)
+(binpack2-vis3 :pos-x 3100 :pos-y 300 :width 700 :height 700)
 #++
-(binpack2-vis2 :pos-x 00 :pos-y 300 :width 700 :height 700)
+(binpack2-vis3 :pos-x 00 :pos-y 300 :width 700 :height 700)
 #++
 (glut:show-window)

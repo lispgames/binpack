@@ -304,6 +304,8 @@
 #++
 (bench-file/1 "e:/tmp/binpackb5s2.txt")
 #++
+(bench-file/1 "d:/tmp/rects.noto")
+#++
 (bench-file/s "e:/tmp/binpackb3.txt")
 
 (defun load-file (fn)
@@ -318,7 +320,7 @@
       (list w h (coerce v 'list)))))
 
 #++
-(apply #'run2 (load-file "e:/tmp/binpackb5s.txt"))
+(apply #'run2 (load-file "d:/tmp/rects.noto"))
 #++
 (run2 9096 9096
       #++(gen-test 2048 2048)
@@ -327,7 +329,7 @@
       :shape (make-instance
               'shaping-quantized
               :w 2048 :h 2048
-              :dx 64 :dy 64))
+              :dx 4 :dy 1))
 
 #++
 (let* ((f1 "e:/tmp/binpackb9")
