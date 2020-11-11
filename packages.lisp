@@ -25,7 +25,11 @@
            #:sort-rects/w+h-desc
            #:sort-rects/perimeter-desc
            #:sort-rects/aspect*area-desc
-           #:total-pixels))
+           #:total-pixels
+           #:rect*
+           #:intersectsp
+           #:containsp
+           #:rects-bounds))
 
 (defpackage binpack
   (:use :cl :binpack/common)
@@ -38,6 +42,7 @@
            #:y
            #:w
            #:h
+           #:page
            #:with-rect
            #:rect-initargs
            #:expand-and-retry
@@ -58,6 +63,7 @@
            #:y
            #:w
            #:h
+           #:page
            #:with-rect
            #:rect-initargs
            #:expand-and-retry

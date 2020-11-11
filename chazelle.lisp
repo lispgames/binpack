@@ -1,5 +1,5 @@
-(in-package #:binpack2)
-#++(ql:quickload 'binpack)
+(in-package #:binpack/2)
+#++(ql:quickload 'binpack/2)
 
 ;; based on Chazelle's "Bottom-Left Bin-Packing Heuristic: An
 ;; Efficient Implementation" (

@@ -1,4 +1,4 @@
-(in-package #:binpack)
+(in-package #:binpack/2)
 
 ;; benchmarking code for binpack2 stuff
 

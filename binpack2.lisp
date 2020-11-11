@@ -1,4 +1,4 @@
-(in-package #:binpack)
+(in-package #:binpack/2)
 
 
 ;;; packing shape control. By default, most of the algorithms tend to
@@ -350,7 +350,7 @@ Returns # of pages allocated as 2nd value, and NIL or # of rects that failed to 
                  (:stop
                   ;; clear X,Y,PAGE for rest of rects, just to be
                   ;; consistent
-                  (break "stop")
+                  #++(break "stop")
                   (incf unpacked)
                   (loop for r in rest
                         do (incf unpacked)
@@ -358,7 +358,7 @@ Returns # of pages allocated as 2nd value, and NIL or # of rects that failed to 
                   (loop-finish))
                  ;; try packing remaining rects
                  (:skip
-                     (break "skip")
+                     #++(break "skip")
                      (incf unpacked))))
     (values rects
             (fill-pointer (state state))

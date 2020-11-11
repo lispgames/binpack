@@ -5,6 +5,7 @@
   :license "MIT"
   :depends-on (alexandria)
   :serial t
+  :in-order-to ((asdf:test-op (asdf:test-op binpack-test)))
   :components ((:file "packages")
                (:file "common")
                (:file "maxrects")
@@ -18,6 +19,7 @@
   :license "MIT"
   :depends-on (alexandria)
   :serial t
+  :in-order-to ((asdf:test-op (asdf:test-op binpack-test/2)))
   :components ((:file "packages")
                (:file "common")
                (:file "maxrects")

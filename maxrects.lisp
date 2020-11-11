@@ -154,13 +154,6 @@
                             (go :retry)))
                         min-rect))))))
 
-(defun intersectsp (rect1 rect2)
-  (with-rect (nil x1 y1 w1 h1) rect1
-    (with-rect (nil x2 y2 w2 h2) rect2
-      (and (< x1 (+ x2 w2))
-           (> (+ x1 w1) x2)
-           (< y1 (+ y2 h2))
-           (> (+ y1 h1) y2)))))
 
 (defun subdivide-rect (rect placed)
   (flet ((splitsp (coord from to)
@@ -179,12 +172,6 @@
                 (push (rect nil x (+ py ph) w (- (+ y h) (+ py ph))) result))
               result)))
         (list rect))))
-
-(defun containsp (outer inner)
-  (with-rect (nil ox oy ow oh) outer
-    (with-rect (nil ix iy iw ih) inner
-      (and (>= (+ ox ow) (+ ix iw) ix ox)
-           (>= (+ oy oh) (+ iy ih) iy oy)))))
 
 (defun normalize-free-space (rects)
   (remove

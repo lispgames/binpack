@@ -17,6 +17,9 @@
 (defun rect (id x y w h)
   (make-instance 'rect :id id :x x :y y :w w :h h))
 
+(defun rect* (w h &optional (id nil))
+  (make-instance 'rect :id id :w w :h h))
+
 (defmacro with-rect ((id x y w h) rect &body body)
   (alexandria:once-only (rect)
     `(symbol-macrolet (,@(when id `((,id (id ,rect))))
@@ -30,6 +33,14 @@
   (with-rect (nil x y w h) rect
     (and (<= x px (+ x w))
          (<= y py (+ y h)))))
+
+(defun print-rect (r &optional (stream *standard-output*))
+  (format stream "~sx~s~@[@~{~s,~s,~s~}~]~@[=~s~]"
+          (w r) (h r)
+          (when (x r)
+            (list (x r) (y r) (or (page r) 0)))
+          (id r)))
+(print-rect (rect 3 33 22 1 2) nil)
 
 (defgeneric rect-initargs (rect)
   (:method-combination append))
@@ -105,7 +116,7 @@
   (labels ((a (r)
              (with-rect (nil nil nil w h) r
                (* w h))))
-    (stable-sort rects '>) :key #'a))
+    (stable-sort rects '> :key #'a)))
 
 (defun sort-rects/width-desc (rects)
   (stable-sort rects '> :key #'w))
@@ -121,14 +132,38 @@
   (labels ((p (r)
              (with-rect (nil nil nil w h) r
                (+ (* 2 w) (* 2 h)))))
-    (stable-sort rects '>) :key #'p))
+    (stable-sort rects '> :key #'p)))
 
 (defun sort-rects/aspect*area-desc (rects)
   (labels ((aa (r)
              (with-rect (nil nil nil w h) r
                (* (/ (max w h) (min w h))
                   w h))))
-    (stable-sort rects '>) :key #'aa))
+    (stable-sort rects '> :key #'aa)))
 
 (defun total-pixels (rects)
   (loop for r in rects sum (* (w r) (h r))))
+
+(defun rects-bounds (rects)
+  (loop for r in rects
+        when (x r)
+          maximize (+ (x r) (w r)) into w
+          and maximize (+ (y r) (h r)) into h
+          and maximize (or (page r) 0) into page
+        finally (return (values w h page))))
+
+
+(defun intersectsp (rect1 rect2)
+  (with-rect (nil x1 y1 w1 h1) rect1
+    (with-rect (nil x2 y2 w2 h2) rect2
+      (and (< x1 (+ x2 w2))
+           (> (+ x1 w1) x2)
+           (< y1 (+ y2 h2))
+           (> (+ y1 h1) y2)))))
+
+(defun containsp (outer inner)
+  (with-rect (nil ox oy ow oh) outer
+    (with-rect (nil ix iy iw ih) inner
+      (and (>= (+ ox ow) (+ ix iw) ix ox)
+           (>= (+ oy oh) (+ iy ih) iy oy)))))
+
