@@ -6,7 +6,9 @@
                     (:bc :binpack/common))
   (:export
    #:even-cuts
-   #:random-cuts))
+   #:random-cuts
+   #:valid-packing
+   #:in-bounds))
 (in-package binpack-test/common)
 
 ;; prng for generating test cases, so they don't depend on implementation
@@ -85,3 +87,28 @@
 (mapcar (a:rcurry 'bc::print-rect nil)
         (random-cuts 256 256 3 45))
 
+(defun in-bounds (rects w h)
+  (loop for r1 in rects
+        for x = (bc:x r1)
+        for y = (bc:y r1)
+        when x
+          do (true (<= 0 x))
+             (true (<= 0 y))
+             (true (<= (+ x (bc:w r1)) w))
+             (true (<= (+ y (bc:h r1)) h)))
+  t)
+
+(defun valid-packing (rects)
+  (loop for (r1 . rest) on rects
+        for x = (bc:x r1)
+        for y = (bc:y r1)
+        for page = (bc:page r1)
+        when x
+        do (true y)
+           (true page)
+           (flet ((doesnt-intersect ()
+                    (loop for r2 in rest
+                          never (and (eql page (bc:page r2))
+                                     (bc:intersectsp r1 r2)))))
+             (true (doesnt-intersect))))
+  t)

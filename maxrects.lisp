@@ -20,9 +20,18 @@
 (defmethod pack-state-free-rects ((ps pack-state))
   ;; todo: implement multipage
   (aref (state ps) 0))
+(defmethod (setf pack-state-free-rects) (new (ps pack-state))
+  ;; todo: implement multipage
+  (setf (aref (state ps) 0) new))
+
 
 (defun start-pack/mr (width height)
-  (make-pack-state :free-rects (list (rect nil 0 0 width height))))
+  (make-instance 'pack-state
+                 :state (make-array 1
+                                    :initial-contents
+                                    (list (list (rect nil 0 0 width height)))
+                                    :fill-pointer 1
+                                    :adjustable t)))
 
 (defun reset-pack/mr (state width height)
   (setf (pack-state-free-rects state) (list (rect nil 0 0 width height))))
@@ -200,6 +209,7 @@
       (let ((placed (apply #'make-instance (class-of rect)
                            :x fx :y fy
                            (rect-initargs rect))))
+        (setf (page placed) 0)
         (list placed (resolve-free-rects placed free-rects))))))
 
 (defun pack-1/mr (rect state)

@@ -20,4 +20,4 @@
   :perform
   (asdf:test-op (op c) (uiop:symbol-call :parachute :test :binpack-test/2))
   :components ((:file "test-common")
-               (:file "test1")))
+               (:file "test2")))

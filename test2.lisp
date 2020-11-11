@@ -1243,31 +1243,6 @@
 (time
  (test 'binpack))
 
-(defun in-bounds (rects w h)
-  (loop for r1 in rects
-        for x = (b:x r1)
-        for y = (b:y r1)
-        when x
-          do (true (<= 0 x))
-             (true (<= 0 y))
-             (true (<= (+ x (b:w r1)) w))
-             (true (<= (+ y (b:h r1)) h)))
-  t
-)
-(defun valid-packing (rects)
-  (loop for (r1 . rest) on rects
-        for x = (b:x r1)
-        for y = (b:y r1)
-        for page = (b:page r1)
-        when x
-        do (true y)
-           (true page)
-           (flet ((doesnt-intersect ()
-                    (loop for r2 in rest
-                          never (and (eql page (b:page r2))
-                                     (bc:intersectsp r1 r2)))))
-             (true (doesnt-intersect))))
-  t)
 
 (defvar *tmp*)
 (define-test (binpack2 packing1)
