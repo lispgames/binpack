@@ -71,6 +71,6 @@ jobs:
     - name: load code and run tests
       shell: bash
       run: |
-        run-parachute -l "binpack-test/common" "binpack-common"
-        run-parachute -l "binpack-test" "binpack"
-        run-parachute -l "binpack-test/2" "binpack2"
+        run-parachute -l "binpack-test/common" "binpack-test/test-common"
+        run-parachute -l "binpack-test" "binpack-test"
+        run-parachute -l "binpack-test/2" "binpack-test/2"
