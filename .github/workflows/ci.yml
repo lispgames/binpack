@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [ master ]
+jobs:
+  test:
+    name: ${{ matrix.lisp }} on ${{ matrix.os }}
+    strategy:
+      matrix:
+        lisp: [sbcl-bin]
+        os: [ubuntu-latest] #[ubuntu-latest, macos-latest, windows-latest]
+
+    # run the job on every combination of "lisp" and "os" above
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    # tell git not to convert line endings, and add /usr/local/bin to PATH
+    - name: turn off git autocrlf
+      if: matrix.os == 'windows-latest'
+      run: |
+        git config --global core.autocrlf false
+        echo "ROSWELL_INSTALL_DIR=$HOME/ros" >> $GITHUB_ENV
+        echo "$HOME/ros/bin" >> $GITHUB_PATH
+
+    - uses: actions/checkout@v2
+
+    # Check out fork of CI-Utils
+    - run: mkdir -p ~/lisp/
+
+    - name: ci-utils fork
+      uses: actions/checkout@v2
+      with:
+        repository: 3b/ci-utils
+        ref: test2
+        path: ~/lisp/ci-utils
+
+
+    - name: cache .roswell
+      id: cache-dot-roswell
+      uses: actions/cache@v1
+      with:
+        path: ~/.roswell
+        key: ${{ runner.os }}-dot-roswell-${{ matrix.lisp }}-${{ hashFiles('**/*.asd') }}
+        restore-keys: |
+          ${{ runner.os }}-dot-roswell-${{ matrix.lisp }}-
+          ${{ runner.os }}-dot-roswell-
+    - name: install roswell
+      # always run install, since it does some global installs and setup that isn't cached
+      env:
+       LISP: ${{ matrix.lisp }}
+      run: curl -L https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh -x
+
+    - name: install parachute
+      run: |
+        ros install parachute
+        echo "$HOME/.roswell/bin" >> $GITHUB_PATH
+
+    - name: run lisp
+      continue-on-error: true
+      shell: bash
+      run: |
+        ros -e '(format t "~a:~a on ~a~%...~%~%" (lisp-implementation-type) (lisp-implementation-version) (machine-type))'
+        ros -e '(format t " fixnum bits:~a~%" (integer-length most-positive-fixnum))'
+        ros -e "(ql:quickload 'trivial-features)" -e '(format t "features = ~s~%" *features*)'
+    - name: update ql dist if we have one cached
+      shell: bash
+      run: ros -e "(ql:update-all-dists :prompt nil)"
+
+    - name: load code and run tests
+      shell: bash
+      run: |
+        run-parachute -l "binpack-test/common" "binpack-test/test-common"
+        run-parachute -l "binpack-test" "binpack-test"
+        run-parachute -l "binpack-test/2" "binpack-test/2"
