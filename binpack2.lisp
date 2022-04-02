@@ -412,13 +412,13 @@ Returns # of pages allocated as 2nd value, and NIL or # of rects that failed to 
                     :page-policy (if multipage :best-fit nil)))
          for (a u m) = (calculate-page-bounds pack pages)
          when (or (not best)
-                  (< m best-count)
-                  (and (<= m best-count)
+                  (every '< m best-count)
+                  (and (every '<= m best-count)
                        (< a best-area)))
            do (setf best pack
                     best-count m
                     best-area a))
-    best))
+    (values best (first best-count) (second best-count))))
 
 
 #++
