@@ -27,27 +27,26 @@
 (defmethod shaping-penalty ((s shaping-po2) p)
   (let ((w (w s))
         (h (h s)))
-    (setf (penalty-multiplier p)
-          (let ((x (+ (x p) (w p)))
-                (y (+ (y p) (h p))))
-            (cond
-              ;; fits, no penalty
-              ((and (<= x w)
-                    (<= y h))
-               0)
-              ;; otherwise calculate penalty = # of pixels expanded
-              (t
-               (let* ((a1 (* w h))
-                      (w2 (max w (ceilingp2 x)))
-                      (h2 (max h (ceilingp2 y)))
-                      (a2 (* w2 h2))
-                      (sp (if (square s)
-                              (/ (max w2 h2)
-                                 (min w2 h2))
-                              1)))
-                 (if (= a1 a2)
-                     (break "??")
-                     (* sp (+ 1 (/ (- a2 a1) a1)))))))))))
+    (let ((x (+ (x p) (w p)))
+          (y (+ (y p) (h p))))
+      (cond
+        ;; fits, no penalty
+        ((and (<= x w)
+              (<= y h))
+         0)
+        ;; otherwise calculate penalty = # of pixels expanded
+        (t
+         (let* ((a1 (* w h))
+                (w2 (max w (ceilingp2 x)))
+                (h2 (max h (ceilingp2 y)))
+                (a2 (* w2 h2))
+                (sp (if (square s)
+                        (/ (max w2 h2)
+                           (min w2 h2))
+                        1)))
+           (if (= a1 a2)
+               (break "??")
+               (* sp (+ 1 (/ (- a2 a1) a1))))))))))
 
 (defmethod shaping-add ((s shaping-po2) p)
   (let* ((x (+ (x p) (w p)))
@@ -79,27 +78,26 @@
 (defmethod shaping-penalty ((s shaping-quantized) p)
   (let ((w (w s))
         (h (h s)))
-    (setf (penalty-multiplier p)
-          (let ((x (+ (x p) (w p)))
-                (y (+ (y p) (h p))))
-            (cond
-              ;; fits, no penalty
-              ((and (<= x w)
-                    (<= y h))
-               0)
-              ;; otherwise calculate penalty = # of pixels expanded
-              (t
-               (let* ((a1 (* w h))
-                      (w2 (max w (ceilingn x (dx s))))
-                      (h2 (max h (ceilingn y (dy s))))
-                      (a2 (* w2 h2))
-                      (sp (if (square s)
-                              (/ (max w2 h2)
-                                 (min w2 h2))
-                              1)))
-                 (if (= a1 a2)
-                     (break "??")
-                     (* sp (+ 1 (/ (- a2 a1) a1)))))))))))
+    (let ((x (+ (x p) (w p)))
+          (y (+ (y p) (h p))))
+      (cond
+        ;; fits, no penalty
+        ((and (<= x w)
+              (<= y h))
+         0)
+        ;; otherwise calculate penalty = # of pixels expanded
+        (t
+         (let* ((a1 (* w h))
+                (w2 (max w (ceilingn x (dx s))))
+                (h2 (max h (ceilingn y (dy s))))
+                (a2 (* w2 h2))
+                (sp (if (square s)
+                        (/ (float (max w2 h2))
+                           (min w2 h2))
+                        1)))
+           (if (= a1 a2)
+               (break "??")
+               (* sp (+ 1 (/ (float (- a2 a1)) a1))))))))))
 
 (defmethod shaping-add ((s shaping-quantized) p)
   (let* ((x (+ (x p) (w p)))
@@ -114,10 +112,9 @@
   ())
 
 (defmethod shaping-penalty ((s shaping-circle) p)
-  (setf (penalty-multiplier p)
-        (let ((x (+ (x p) (w p)))
-              (y (+ (y p) (h p))))
-          (+ (expt x 2) (expt y 2)))))
+  (let ((x (+ (x p) (w p)))
+        (y (+ (y p) (h p))))
+    (+ (expt x 2) (expt y 2))))
 
 (defmethod shaping-add ((s shaping-circle) p))
 
@@ -146,8 +143,7 @@
                                      (= 1 (aref (mask s) x y)))
                                 0
                                 1))))
-    (setf (penalty-multiplier p)
-          pm)))
+    pm))
 
 (defmethod shaping-add ((s shaping-sparse) p)
   (loop for x from (floor (x p) (dx s))
@@ -176,7 +172,8 @@
     (error "adding page to non-paged pack-state?"))
   (ecase (algorithm state)
     (:chazelle (vector-push-extend (init-hole (width state) (height state))
-                                   (state state))))
+                                   (state state)))
+    (:maxrects2 (add-page/mr2 state)))
   state)
 
 (defun start-pack (max-width max-height
@@ -214,6 +211,19 @@ will usually leave more unused space on earlier pages."
     #++
     (:maxrects
      )
+    (:maxrects2
+     (add-page
+      (make-instance 'pack-state
+                     :state (make-array 0
+                                        :fill-pointer 0
+                                        ::adjustable t
+                                        :initial-element
+                                        nil)
+                     :shaping growth-policy
+                     :page-policy page-policy
+                     :algorithm :maxrects2
+                     :width max-width
+                     :height max-height)))
     ;; todo: implement a "fast" packer
     ;; (skyline, https://blackpawn.com/texts/lightmaps/default.html ,
     ;; or https://github.com/TeamHypersomnia/rectpack2D/ )?
@@ -251,7 +261,8 @@ will usually leave more unused space on earlier pages."
                    (y rect) y)
              (setf (page rect) nil
                    (x rect) nil
-                   (y rect) nil))))))
+                   (y rect) nil)))))
+    (:maxrects2 (pack-1/@/mr2 rect state page)))
   rect)
 
 (defun pack-1/ff (rect state)
