@@ -70,4 +70,15 @@
            #:expand-and-continue
            #:start-pack
            #:pack-1
-           #:reset-pack))
+           #:reset-pack
+           #:sort-rects/longest-side-desc
+           #:sort-rects/area-desc
+           #:sort-rects/width-desc
+           #:sort-rects/height-desc
+           #:sort-rects/w+h-desc
+           #:sort-rects/perimeter-desc
+           #:sort-rects/aspect*area-desc
+           #:shaping
+           #:shaping-quantized
+           #:shaping-po2
+           #:shaping-sparse))
