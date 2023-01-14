@@ -2797,7 +2797,8 @@
                          shaping)
   (let ((px (find-all-placements hole w h)))
     (when shaping
-      (loop for p in px do (shaping-penalty shaping p)))
+      (loop for p in px
+            do (setf (penalty-multiplier p) (shaping-penalty shaping p))))
     (progn ;unless (loop for p in px always (zerop (penalty-multiplier p))))
       #++(format t "px:~s " (map 'list 'penalty-multiplier px))
       ;; if we have more than 1 entry, try to pick the best

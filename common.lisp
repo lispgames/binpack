@@ -42,6 +42,29 @@
           (id r)))
 (print-rect (rect 3 33 22 1 2) nil)
 
+(declaim (inline touches contains intersects))
+(defun touches (r1 r2)
+  (with-rect (nil x1 y1 w1 h1) r1
+    (with-rect (nil x2 y2 w2 h2) r2
+      (and (<= x1 (+ x2 w2))
+           (>= (+ x1 w1) x2)
+           (<= y1 (+ y2 h2))
+           (>= (+ y1 h1) y2)))))
+
+(defun contains (r1 r2)
+  (with-rect (nil x1 y1 w1 h1) r1
+    (with-rect (nil x2 y2 w2 h2) r2
+      (and (<= x1 x2 (+ x2 w2) (+ x1 w1))
+           (<= y1 y2 (+ y2 h2) (+ y1 h1))))))
+
+(defun intersects (r1 r2)
+  (with-rect (nil x1 y1 w1 h1) r1
+    (with-rect (nil x2 y2 w2 h2) r2
+      (and (< x1 (+ x2 w2))
+           (> (+ x1 w1) x2)
+           (< y1 (+ y2 h2))
+           (> (+ y1 h1) y2)))))
+
 (defgeneric rect-initargs (rect)
   (:method-combination append))
 
@@ -166,4 +189,3 @@
     (with-rect (nil ix iy iw ih) inner
       (and (>= (+ ox ow) (+ ix iw) ix ox)
            (>= (+ oy oh) (+ iy ih) iy oy)))))
-

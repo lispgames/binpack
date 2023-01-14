@@ -1,70 +1,8 @@
 (in-package #:binpack/2)
 
-;; benchmarking code for binpack2 stuff
+;; some of binpack2-bench rewritten to use full API so packer is selectable
 
-;; generate a set of rects to be placed taking up WxH
-(defun gen-test (w h)
-  ;; todo: other distributions
-  (let ((a 0)
-        (max (* w h))
-        (w1 (max 1 (min (floor w 3) 15)))
-        (h1 (max 1 (min (floor h 3) 15))))
-    (loop while (< a max)
-          for x = (+ 3 (random w1))
-          for y = (+ 3 (random h1))
-          collect (list x y)
-          do (incf a (* x y)))))
-
-(defun gen-test2 (w h)
-  ;; todo: other distributions
-  (let ((a 0)
-        (max (* w h))
-        (w1 20.0)
-        (h1 8.0))
-    (loop while (< a max)
-          for s = (expt 1.25 (1+ (random w1)))
-          for x = (ceiling (+ 2 (random s)))
-          for y = (ceiling (+ 2 (random s)))
-          collect (list x y)
-          do (incf a (* x y)))))
-
-(defun random-placement (l)
-  (list (alexandria:random-elt l)))
-
-
-(defun xy> (a b)
-  (if (= (car a) (car b))
-      (> (cadr a) (cadr b))
-      (> (car a) (car b))))
-(defun xy< (a b)
-  (if (= (car a) (car b))
-      (< (cadr a) (cadr b))
-      (< (car a) (car b))))
-(defun yx> (a b)
-  (if (= (cadr a) (cadr b))
-      (> (car a) (car b))
-      (> (cadr a) (cadr b))))
-
-(defun xy<> (a b)
-  (if (= (car a) (car b))
-      (> (cadr a) (cadr b))
-      (< (car a) (car b))))
-
-(defun mxy> (a b)
-  (if (= (max (car a) (cadr a))
-         (max (car b) (cadr b)))
-      (> (min (car a) (cadr a))
-         (min (car b) (cadr b)))
-      (> (max (car a) (cadr a))
-         (max (car b) (cadr b)))))
-
-(defun a> (a b)
-  (let ((a1 (* (car a) (cadr a)))
-        (a2 (* (car b) (cadr b))))
-    (if (= a1 a2)
-        (xy> a b)
-        (> a1 a2))))
-
+#++
 (defun run1 (wh &key sort)
   (let* ((w1 wh)
          (h1 wh)
@@ -83,7 +21,7 @@
              for (w h) in tx
              do (setf (values hole x y)
                       (place hole w h #+:heuristic1 'random-placement
-                                      #+:HEURISTIC1 'minimize-contact
+                                      #+:heuristic1 'minimize-contact
                                       :heuristic1 'smallest-hole
                                       :heuristic2 'maximize-contact))
                 (push (list :show w h) r)
@@ -92,10 +30,11 @@
                   (incf c)
                   (push (list :place x y w h) r)
              while hole)))
-#++    (sb-ext:atomic-push (nreverse r) binpack2-vis::*replays*)
+    #++    (sb-ext:atomic-push (nreverse r) binpack2-vis::*replays*)
     (format t "placed ~s/~s @ ~s%~%"
             c (length tx) (* 100.0 (/ a (* w1 h1))))))
 
+#++
 (defun run2 (w1 h1 tx &key sort shape)
   (let* ((hole (init-hole w1 h1))
          (a 0)
@@ -113,7 +52,7 @@
              for (w h) in tx
              do (setf (values hole x y)
                       (place hole w h #+:heuristic1 'random-placement
-                                      #+:HEURISTIC1 'minimize-contact
+                                      #+:heuristic1 'minimize-contact
                                         ;:heuristic1 'smallest-hole
                                         ;:heuristic2 'maximize-contact
                                       :shaping shape))
@@ -131,25 +70,22 @@
             mx my (* 100.0 (/ a (* mx my))))))
 
 
-(defun bench-file (fn)
+(defun bench-file2 (fn &key (algorithm :chazelle))
   (alexandria:with-input-from-file (f fn)
     (let ((w (read f)) (h (read f))
           (start)
-          (bin)
+          (pack nil)
           (placed 0)
           (unplaced 0)
           (i 0))
       (format t "initializing bin to size ~s x ~s~%" w h)
       (setf start (get-internal-real-time))
-      (setf bin (init-hole w h))
+      (setf pack (start-pack w h :packer algorithm))
       (loop for rw = (read f nil nil)
             for rh = (read f nil nil)
             while (and rw rh)
-            do (multiple-value-bind (h x y)
-                   (place bin rw rh)
-                 (declare (ignore y))
-                 (setf bin h)
-                 (if x
+            do (let ((r (pack-1/@ (rect* rw rh) pack 0)))
+                 (if (x r)
                      (incf placed)
                      (incf unplaced))
                  (incf i)
@@ -168,14 +104,15 @@
                           1000))))
       (format t "packed ~s rects, ~s unpacked~%" placed unplaced))))
 
-(defun bench-file/a (fn)
+(defun bench-file/2a (fn &key (algorithm :chazelle))
   (alexandria:with-input-from-file (f fn)
     (let* ((w (* 2 (read f)))
            (h (* 2 (read f)))
            (start)
-           (bin)
+           (pack)
            (placed 0)
            (unplaced 0)
+           (placed-area 0)
            (i 0)
            (mx 0)
            (my 0)
@@ -184,17 +121,18 @@
                                  :dx 1 :dy 1)))
       (format t "initializing bin to size ~s x ~s~%" w h)
       (setf start (get-internal-real-time))
-      (setf bin (init-hole w h))
+      (setf pack (start-pack w h :packer algorithm
+                                 :growth-policy shape))
       (loop for rw = (read f nil nil)
             for rh = (read f nil nil)
             while (and rw rh)
-            do (multiple-value-bind (h x y)
-                   (place bin rw rh :shaping shape)
-                 (setf bin h)
-                 (setf mx (max mx (+ x rw)))
-                 (setf my (max my (+ y rh)))
-                 (if x
-                     (incf placed)
+            do (let ((r (pack-1/@ (rect* rw rh) pack 0)))
+                 (setf mx (max mx (+ (x r) rw)))
+                 (setf my (max my (+ (y r) rh)))
+                 (if (x r)
+                     (progn
+                       (incf placed)
+                       (incf placed-area (* rw rh)))
                      (incf unplaced))
                  (incf i)
                  (when (zerop (mod i 100))
@@ -211,23 +149,24 @@
                        (/ internal-time-units-per-second
                           1000))))
       (format t "packed ~s rects, ~s unpacked~%" placed unplaced)
-      (format t " final size = ~sx~s~%" mx my))))
+      (format t " final size = ~sx~s~%" mx my)
+      (format t "  = ~s (placed = ~s)~%" (* mx my) placed-area))))
 
-(defun bench-file/1 (fn)
+(defun bench-file/21 (fn &key (algorithm :chazelle))
   (alexandria:with-input-from-file (f fn)
     (let ((w (read f)) (h (read f))
           (start)
-          (bin)
+          (pack)
           (placed 0)
           (unplaced 0)
           (i 0))
       (format t "initializing bin to size ~s x ~s~%" w h)
       (setf start (get-internal-real-time))
-      (setf bin (start-pack w h))
+      (setf pack (start-pack w h :packer algorithm))
       (loop for rw = (read f nil nil)
             for rh = (read f nil nil)
             while (and rw rh)
-            do (let ((ok (ignore-errors (pack-1 (rect nil 0 0 rw rh) bin))))
+            do (let ((ok (x (pack-1/@ (rect nil 0 0 rw rh) pack 0))))
                  (if ok
                      (incf placed)
                      (incf unplaced))
@@ -247,38 +186,47 @@
                           1000))))
       (format t "packed ~s rects, ~s unpacked~%" placed unplaced))))
 
-(defun bench-file/s (fn)
+(defun bench-file/2s (fn &key (algorithm :chazelle))
   (alexandria:with-input-from-file (f fn)
     (let ((w (read f)) (h (read f))
           (start)
-          (bin)
+          (pack)
           (placed 0)
           (unplaced 0)
           (i 0)
           (v (make-array 1 :adjustable t :fill-pointer 0)))
       (format t "initializing bin to size ~s x ~s~%" w h)
       (setf start (get-internal-real-time))
-      (setf bin (init-hole w h))
+      (setf pack (start-pack w h :packer algorithm))
       (loop for rw = (read f nil nil)
             for rh = (read f nil nil)
             while (and rw rh)
             do (vector-push-extend (cons rw rh) v))
 
+      (setf v (sort v (lambda (a b)
+                        #++(> (* (car a) (cdr a))
+                              (* (car b) (cdr b)))
+                        #++
+                        (> (+ (car a) (cdr a))
+                           (+ (car b) (cdr b)))
+
+                        (if (= (car a) (car b))
+                            (> (cdr a) (cdr b))
+                            (> (car a) (car b)))
+                        #++
+                        (if (= (cdr a) (cdr b))
+                            (> (car a) (car b))
+                            (> (cdr a) (cdr b))))))
+      (format t "-> ~s~%" (subseq v 0 123))
       (let ((t2 (get-internal-real-time)))
         (format t "load+sort ~sms~%"
                 (floor (- t2 start)
                        (/ internal-time-units-per-second
                           1000))))
-      (sort v (lambda (a b)
-                (if (= (car a) (car b))
-                    (> (cdr a) (cdr b))
-                    (> (car a) (car b)))))
+
       (loop for (rw . rh) across v
-            do (multiple-value-bind (h x y)
-                   (place bin rw rh)
-                 (declare (ignore y))
-                 (setf bin h)
-                 (if x
+            do (let ((r (pack-1/@ (rect* rw rh) pack 0)))
+                 (if (x r)
                      (incf placed)
                      (incf unplaced))
                  (incf i)
@@ -300,13 +248,27 @@
 
 
 #++
-(bench-file/a "e:/tmp/binpackb6s.txt")
+(bench-file/2a "e:/tmp/binpackb6s.txt")
 #++
-(bench-file/1 "e:/tmp/binpackb5s2.txt")
+(bench-file/2a "e:/tmp/binpackb6s.txt" :algorithm :maxrects2)
 #++
-(bench-file/1 "d:/tmp/rects.noto")
+(bench-file/21 "e:/tmp/binpackb5s2.txt")
 #++
-(bench-file/s "e:/tmp/binpackb3.txt")
+(bench-file/21 "e:/tmp/binpackb5s2.txt" :algorithm :maxrects2)
+#++
+(bench-file/21 "d:/tmp/rects.noto")
+#++
+(bench-file/21 "d:/tmp/rects.noto" :algorithm :maxrects2)
+#++
+(bench-file/2s "e:/tmp/binpackb3.txt")
+#++
+(bench-file/2s "e:/tmp/binpackb3.txt" :algorithm :maxrects2)
+#++
+(bench-file/2s "d:/tmp/rects.noto")
+#++
+(bench-file/2s "d:/tmp/rects.noto" :algorithm :maxrects2)
+#++
+(bench-file/2s "e:/tmp/binpackb3.txt" :algorithm :maxrects2)
 
 (defun load-file (fn)
   (alexandria:with-input-from-file (f fn)
